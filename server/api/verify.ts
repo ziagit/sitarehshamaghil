@@ -1,5 +1,5 @@
 // server/api/verify.ts
-import { getQuery, readBody, setResponseHeader } from "h3"
+import { getQuery, readBody, setResponseHeader, defineEventHandler } from "h3"
 import { sendMessengerReply } from "../../utils/messenger"
 
 export default defineEventHandler(async (event) => {
@@ -8,22 +8,25 @@ export default defineEventHandler(async (event) => {
   const method = event.method
 
   // 1. Handle Facebook Verification (GET)
-  // This is what Facebook calls when you click "Verify and Save" in the dashboard
   if (method === 'GET') {
-    if (query["hub.mode"] === "subscribe" && query["hub.verify_token"] === config.FACEBOOK_VERIFY_TOKEN) {
+    const mode = query["hub.mode"]
+    const token = query["hub.verify_token"]
+    const challenge = query["hub.challenge"]
+
+    if (mode === "subscribe" && token === config.FACEBOOK_VERIFY_TOKEN) {
+      // Facebook requires a PLAIN TEXT response of the challenge string
       setResponseHeader(event, "Content-Type", "text/plain")
-      return query["hub.challenge"]
+      return challenge
     }
     return "Verification failed"
   }
 
   // 2. Handle Incoming Messages (POST)
-  // This is what Facebook calls every time a user sends a message to your page
   if (method === 'POST') {
-    const body = await readBody(event)
+    const body = await readBody(event).catch(() => null)
     
-    // Extract the message and sender ID
-    const messagingEvent = body.entry?.[0]?.messaging?.[0]
+    // Extract the message and sender ID from the Facebook payload
+    const messagingEvent = body?.entry?.[0]?.messaging?.[0]
     const sender = messagingEvent?.sender?.id
     const message = messagingEvent?.message?.text
 
@@ -31,11 +34,11 @@ export default defineEventHandler(async (event) => {
       console.log(`Received message from ${sender}: ${message}`)
 
       try {
-        // --- CALL GROQ AI ---
+        // --- CALL GROQ AI (FULL CORRECT ENDPOINT) ---
         const ai: any = await $fetch("https://api.groq.com", {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${config.GROQ_API_KEY}`,
+            "Authorization": `Bearer ${config.GROQ_API_KEY}`,
             "Content-Type": "application/json",
           },
           body: {
@@ -43,7 +46,7 @@ export default defineEventHandler(async (event) => {
             messages: [
               {
                 role: "system",
-                content: `You are a warm, friendly, and emotionally intelligent assistant. Speak naturally like a human. Use short messages and light emojis. 🙂❤️`
+                content: "You are a warm, friendly, and emotionally intelligent assistant. Speak naturally like a human. Use short messages and light emojis. 🙂❤️"
               },
               {
                 role: "user",
@@ -53,18 +56,20 @@ export default defineEventHandler(async (event) => {
           },
         })
 
+        // Safely extract the AI's response text
         const reply = ai?.choices?.[0]?.message?.content || "🙂 I'm here for you!"
 
         // --- SEND REPLY TO MESSENGER ---
         await sendMessengerReply(sender, reply)
-        console.log(`Replied to ${sender} with: ${reply}`)
+        console.log(`Replied successfully to ${sender}`)
 
       } catch (error: any) {
-        console.error("AI or Messenger Error:", error.data || error.message)
+        // This will log the specific Groq or Facebook error in your Vercel console
+        console.error("Processing Error:", error.data || error.message)
       }
     }
 
-    // Always return 200 OK to Facebook so they don't keep retrying
+    // Always return 200 OK to Facebook so they don't retry the same message
     return { ok: true }
   }
 })
