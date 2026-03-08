@@ -1,27 +1,14 @@
-// utils/messenger.ts
-
-export async function sendMessengerReply(userId: string, text: string) {
+export async function sendMessengerReply(senderId: string, text: string) {
   const config = useRuntimeConfig()
-  const PAGE_TOKEN = config.FACEBOOK_PAGE_TOKEN
 
-  if (!PAGE_TOKEN) {
-    console.error("FACEBOOK_PAGE_TOKEN is missing")
-    return
-  }
-
-  try {
-    await $fetch(
-      `https://graph.facebook.com{PAGE_TOKEN}`,
-      {
-        method: "POST",
-        body: {
-          recipient: { id: userId },
-          message: { text }
-        }
+  await $fetch(
+    `https://graph.facebook.com/v19.0/me/messages?access_token=${config.FACEBOOK_PAGE_TOKEN}`,
+    {
+      method: "POST",
+      body: {
+        recipient: { id: senderId },
+        message: { text }
       }
-    )
-  } catch (error: any) {
-    // This will help you see WHY it fails in Vercel logs
-    console.error("Messenger API Error:", error.data || error.message)
-  }
+    }
+  )
 }
