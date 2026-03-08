@@ -3,7 +3,7 @@ export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
   const query = getQuery(event)
   const method = event.node.req.method
-
+ 
   // --- 1. HANDLE VERIFICATION (GET) ---
   if (method === 'GET') {
     if (query["hub.mode"] === "subscribe" && query["hub.verify_token"] === config.FACEBOOK_VERIFY_TOKEN) {

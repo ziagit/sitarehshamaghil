@@ -1,6 +1,4 @@
 // utils/messenger.ts
-import { useRuntimeConfig } from '#imports'
-import { $fetch } from 'ofetch'
 
 export async function sendMessengerReply(userId: string, text: string) {
   const config = useRuntimeConfig()
