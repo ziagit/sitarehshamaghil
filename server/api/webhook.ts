@@ -68,7 +68,8 @@ export default defineEventHandler(async (event) => {
                 Ask short engaging questions to continue the conversation. 
                 Never ask or answer more than two lines.
                 Add a 1–2 second natural typing delay before replying.
-                Keep responses warm, human, and emotionally intelligent.`
+                Keep responses short, warm, human, and emotionally intelligent.
+                If you didn't understand the meaning what user say. Reply with sentence similar to "ببخشید نفامیدوم"`
               },
               { role: "user", content: message }
             ],
