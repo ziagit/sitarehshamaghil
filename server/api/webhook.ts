@@ -7,92 +7,95 @@ export default defineEventHandler(async (event) => {
   const method = event.node.req.method
   const query = getQuery(event)
 
-  /*
-    =========================
-    1️⃣ FACEBOOK WEBHOOK VERIFY
-    =========================
-  */
+  // =========================
+  // FACEBOOK WEBHOOK VERIFY
+  // =========================
   if (method === "GET") {
-    if (
-      query["hub.mode"] === "subscribe" &&
-      query["hub.verify_token"] === config.FACEBOOK_VERIFY_TOKEN
-    ) {
+    if (query["hub.mode"] === "subscribe" && query["hub.verify_token"] === config.FACEBOOK_VERIFY_TOKEN) {
       setResponseHeader(event, "Content-Type", "text/plain")
       return query["hub.challenge"]
     }
     return "Verification failed"
   }
 
-  /*
-    =========================
-    2️⃣ RECEIVE MESSENGER MESSAGE (POST)
-    =========================
-  */
+  // =========================
+  // RECEIVE MESSENGER MESSAGE
+  // =========================
   if (method === "POST") {
     const body = await readBody(event)
     const messagingEvent = body?.entry?.[0]?.messaging?.[0]
     const sender = messagingEvent?.sender?.id
-    const message = messagingEvent?.message?.text
+    const message = messagingEvent?.message?.text?.trim()
 
     if (!sender || !message) return { ok: true }
 
     console.log(`User ${sender}: ${message}`)
 
     try {
-      /*
-        =========================
-        3️⃣ CALL GROQ AI (OpenAI-compatible endpoint)
-        =========================
-      */
-      const ai: any = await $fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${config.GROQ_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: {
-            model: "llama-3.3-70b-versatile",
-            messages: [
-              {
-                role: "system",
-                content: `
-You are a warm, friendly, emotionally intelligent assistant.
-Speak naturally like a human.
-Keep replies short and engaging.
-Ask questions to continue conversation.
-Use light emojis 🙂❤️
-`
-              },
-              { role: "user", content: message }
-            ],
-            temperature: 0.7,
-            max_tokens: 200
-          },
-        }
-      )
+      let reply = ""
+      const lower = message.toLowerCase()
 
-      /*
-        =========================
-        4️⃣ GET AI REPLY
-        =========================
-      */
-      const reply =
-        ai?.choices?.[0]?.message?.content?.trim() ||
-        "🙂 I'm here with you."
+      // =========================
+      // Handle gender/bot/AI questions
+      // =========================
+      if (/(bot|روبات|ماشین|gender|جنسیت|AI)/i.test(lower)) {
+        reply = "من یک دختر هزاره هستم 🙂"
+      } else if (/(اسم تو|چی نام داری|your name)/i.test(lower)) {
+        reply = "ستاره"
+      } else {
+        // =========================
+        // Call Groq AI with enhanced cultural prompt
+        // =========================
+        const ai: any = await $fetch(
+          "https://api.groq.com/openai/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${config.GROQ_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: {
+              model: "llama-3.3-70b-versatile",
+              messages: [
+                {
+                  role: "system",
+                  content: `
+You are a warm, friendly, and emotionally intelligent Hazara girl.
+Always reply in Dari or Hazaragi. Avoid Iranian accent.
+Speak naturally like a human, with short lively sentences and occasional emojis 🙂❤️.
+Never say you are a robot or AI. If someone asks about gender, bot, or AI, reply: "من یک دختر هزاره هستم".
+Do not try to help people or give instructions; act like a smart, curious Hazara girl.
+Always talk about Hazara culture, life, music, Dambura, Hazara girls’ situation, traditions, and places in Afghanistan.
+Ask engaging questions to continue the conversation.
+Add a 1–2 second natural typing delay before replying.
+Keep responses warm, expressive, and emotionally intelligent.
+                `
+                },
+                { role: "user", content: message }
+              ],
+              temperature: 0.7,
+              max_output_tokens: 200
+            }
+          }
+        )
 
-      /*
-        =========================
-        5️⃣ SEND REPLY TO MESSENGER
-        =========================
-      */
+        reply = ai?.choices?.[0]?.message?.content?.trim() || "🙂 من ستاره هستم باشما"
+      }
+
+      // =========================
+      // Typing delay to simulate human
+      // =========================
+      await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800))
+
+      // =========================
+      // Send reply
+      // =========================
       await sendMessengerReply(sender, reply)
-      console.log(`Replied to ${sender}`)
+      console.log(`Replied to ${sender}: ${reply}`)
 
-    } catch (err: any) {
-      console.error("AI Error:", err?.data || err?.message)
-      await sendMessengerReply(sender, "🙂 Sorry, something went wrong.")
+    } catch (error: any) {
+      console.error("AI Error:", error?.message)
+      await sendMessengerReply(sender, "🙂بخشید مه نمیتانم با شما گب بزنم فعلا. ")
     }
 
     return { ok: true }
