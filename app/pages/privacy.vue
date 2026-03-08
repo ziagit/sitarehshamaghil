@@ -1,6 +1,6 @@
 <template>
     <main class="max-w-3xl mx-auto p-6">
-        <h1 class="text-3xl font-bold mb-4 text-center">Privacy Policy 2026</h1>
+        <h1 class="text-3xl font-bold mb-4 text-center">Privacy Policy</h1>
 
         <section class="mb-4">
             <p>
