@@ -69,7 +69,7 @@ export default defineEventHandler(async (event) => {
             "Content-Type": "application/json"
           },
           body: {
-            model: "llama3-70b-8192",
+            model: "llama-3.3-70b-versatile",   // safer and supported
             messages: [
               {
                 role: "system",
@@ -87,7 +87,9 @@ Use emojis sometimes 🙂❤️
                 role: "user",
                 content: message
               }
-            ]
+            ],
+            temperature: 0.7,
+            max_output_tokens: 200   // NOT max_tokens
           }
         }
       )
@@ -105,6 +107,7 @@ Use emojis sometimes 🙂❤️
       await sendMessengerReply(sender, reply)
 
       console.log(`Replied to ${sender}`)
+      
 
     } catch (error: any) {
       console.error("AI Error:", error?.message)
