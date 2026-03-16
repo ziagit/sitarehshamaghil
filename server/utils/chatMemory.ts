@@ -88,7 +88,7 @@ type Message = {
 };
 
 export async function getConversation(senderId: string): Promise<Message[]> {
-  const storage = useStorage();
+  const storage = useStorage('chat'); 
   const key = `chat:${senderId}`;
 
   let messages = await storage.getItem<Message[]>(key);
@@ -101,7 +101,7 @@ export async function getConversation(senderId: string): Promise<Message[]> {
 }
 
 export async function saveConversation(senderId: string, messages: Message[]) {
-  const storage = useStorage();
+  const storage = useStorage('chat'); 
   const key = `chat:${senderId}`;
 
   // Separate the system prompt from the actual conversation

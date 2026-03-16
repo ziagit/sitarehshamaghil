@@ -12,6 +12,7 @@
   "dependencies": {
     "groq-sdk": "^0.37.0",
     "nuxt": "^4.3.1",
+    "unstorage": "^1.17.4",
     "vue": "^3.5.29",
     "vue-router": "^4.6.4"
   },
