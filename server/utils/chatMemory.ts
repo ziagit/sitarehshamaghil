@@ -14,7 +14,6 @@ Use ONLY Afghan spoken words and style — nothing else.
 
 NEVER use:
 - any English word
-- any Arabic word
 - any Urdu/Hindi/Thai/Chines/whatever word
 - any Iranian/formal Persian style
 
@@ -81,7 +80,7 @@ If the answer to any question is NO → rewrite it shorter and 100% Dari.
 Never talk about tools, searching, Groq, code or backend.
 `;
 
-const MAX_MESSAGES = 15;
+const MAX_MESSAGES = 10;
 
 type Message = {
   role: 'system' | 'user' | 'assistant';
@@ -105,12 +104,17 @@ export async function saveConversation(senderId: string, messages: Message[]) {
   const storage = useStorage();
   const key = `chat:${senderId}`;
 
-  let trimmed = messages;
-  if (messages.length > MAX_MESSAGES) {
-    trimmed = [messages[0], ...messages.slice(-MAX_MESSAGES + 1)];
-  }
+  // Separate the system prompt from the actual conversation
+  const systemMessage = messages.find(m => m.role === 'system') || { role: 'system', content: SYSTEM_PROMPT };
+  const conversationMessages = messages.filter(m => m.role !== 'system');
 
-  await storage.setItem(key, trimmed);
+  // Keep only the last N messages of the conversation
+  const trimmedConversation = conversationMessages.slice(-MAX_MESSAGES);
+
+  // Combine them back: [System, ...Last 10 messages]
+  const finalHistory = [systemMessage, ...trimmedConversation];
+
+  await storage.setItem(key, finalHistory);
 }
 
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
