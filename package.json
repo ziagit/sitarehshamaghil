@@ -10,6 +10,7 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
+    "@upstash/redis": "^1.37.0",
     "groq-sdk": "^0.37.0",
     "nuxt": "^4.3.1",
     "unstorage": "^1.17.4",
