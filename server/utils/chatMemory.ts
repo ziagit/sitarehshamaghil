@@ -57,6 +57,9 @@ type Message = {
   content: string;
 };
 
+/**
+ * Gets conversation history from Upstash Redis
+ */
 export async function getConversation(senderId: string): Promise<Message[]> {
   const storage = useStorage('chat'); 
   const key = `chat:${senderId}`;
@@ -70,43 +73,73 @@ export async function getConversation(senderId: string): Promise<Message[]> {
   return messages;
 }
 
+/**
+ * Saves conversation history to Upstash Redis
+ */
 export async function saveConversation(senderId: string, messages: Message[]) {
   const storage = useStorage('chat'); 
   const key = `chat:${senderId}`;
 
-  // Separate the system prompt from the actual conversation
   const systemMessage = messages.find(m => m.role === 'system') || { role: 'system', content: SYSTEM_PROMPT };
   const conversationMessages = messages.filter(m => m.role !== 'system');
 
-  // Keep only the last N messages of the conversation
+  // Trim to keep last 10 messages
   const trimmedConversation = conversationMessages.slice(-MAX_MESSAGES);
-
-  // Combine them back: [System, ...Last 10 messages]
   const finalHistory = [systemMessage, ...trimmedConversation];
 
   await storage.setItem(key, finalHistory);
 }
 
+/**
+ * Main AI function using Groq SDK and Compound model for built-in web search
+ */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
   let messages = await getConversation(senderId);
-
   messages.push({ role: 'user', content: userMessage });
 
   const completion = await groq.chat.completions.create({
-    model: 'groq/compound',          // or 'groq/compound-mini' if you want smaller/faster
-    messages,
+    // Use 'groq/compound' for built-in web search capabilities
+    model: 'groq/compound', 
+    messages: messages as any,
     temperature: 0.75,
-    max_tokens: 600,
-    // NO tools array needed — built-in tools are automatic on compound models
-    // Optional: you can restrict tools if you want (rarely needed)
-    compound_custom: { tools: { enabled_tools: ['web_search'] } }
+    max_tokens: 150,
   });
 
-  const answer = completion.choices[0].message.content?.trim() || 'معذرت... چیزی نفهمیدم 😔';
+  const answer = completion.choices[0]?.message?.content?.trim() || 'ببخشید، چیزی نفهمیدم 😔';
 
   messages.push({ role: 'assistant', content: answer });
-
   await saveConversation(senderId, messages);
 
   return answer;
+}
+
+/**
+ * Error state management saved in Redis
+ */
+export async function getErrorStatus(senderId: string): Promise<boolean> {
+  const storage = useStorage('chat');
+  const key = `error:${senderId}`;
+  
+  const errorData = await storage.getItem<{ active: boolean; timestamp: number }>(key);
+  if (!errorData) return false;
+
+  // Auto-reset after 15 minutes
+  const fifteenMinutes = 15 * 60 * 1000;
+  if (Date.now() - errorData.timestamp > fifteenMinutes) {
+    await storage.removeItem(key);
+    return false;
+  }
+
+  return errorData.active;
+}
+
+export async function setErrorStatus(senderId: string, status: boolean): Promise<void> {
+  const storage = useStorage('chat');
+  const key = `error:${senderId}`;
+  
+  if (!status) {
+    await storage.removeItem(key);
+  } else {
+    await storage.setItem(key, { active: true, timestamp: Date.now() });
+  }
 }
