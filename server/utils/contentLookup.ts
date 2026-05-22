@@ -105,6 +105,7 @@ function buildSearchQuery(text: string, kind: ContentKind) {
   ]);
 
   const filtered = tokens.filter((token) => !stopWords.has(token));
+  
   const fallback =
     kind === 'song'
       ? ['آهنگ', 'موسیقی']
