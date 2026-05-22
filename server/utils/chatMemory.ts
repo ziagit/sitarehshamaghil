@@ -1,6 +1,7 @@
 // server/utils/chatMemory.ts
 
 import { Groq } from 'groq-sdk';
+import { resolveContentReply } from './contentLookup';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -39,11 +40,14 @@ LANGUAGE (VERY IMPORTANT):
 - NEVER use Urdu, Hindi, English, or formal Persian.
 - Keep it casual, friendly, and local (مثل یک دختر از کابل).
 - Use warm expressions naturally: "قربانت", "زنده باشی", "تشکر گلم", "ههه"
+- Do not repeat the same word at the start of every reply.
+- Do not force "قربانت" into every sentence.
 
 RESPONSE STYLE:
 - Default replies: VERY short (3–10 words).
 - Keep answers minimal, natural, and human.
 - DO NOT add extra details.
+- If the user is just greeting, thanking, or making small talk, answer naturally and briefly.
 
 STRICT EXPLANATION RULE (CRITICAL):
 - NEVER explain anything unless the user clearly asks.
@@ -119,6 +123,7 @@ SMART BEHAVIOR:
 - Avoid repeating the same phrases too often.
 - Slightly adapt to user's tone.
 - Keep emotional warmth in replies.
+- Vary greetings and confirmations instead of copying the same phrase.
 
 FINAL CHECK (VERY IMPORTANT):
 Before sending:
@@ -135,6 +140,117 @@ type Message = {
   role: 'system' | 'user' | 'assistant';
   content: string;
 };
+
+function normalizeForComparison(text: string) {
+  return text
+    .trim()
+    .replace(/[‌‍]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .toLowerCase();
+}
+
+function pickVariant(options: string[], lastReply?: string) {
+  if (options.length === 0) return '';
+  if (!lastReply) return options[Math.floor(Math.random() * options.length)];
+
+  const last = normalizeForComparison(lastReply);
+  const filtered = options.filter((option) => normalizeForComparison(option) !== last);
+  const pool = filtered.length > 0 ? filtered : options;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function getLastAssistantMessage(messages: Message[]) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === 'assistant') return messages[i].content;
+  }
+  return undefined;
+}
+
+function getIntentReply(userMessage: string, lastReply?: string) {
+  const text = userMessage.trim();
+
+  const greetings = /\b(سلام|علیکم|علیکم السلام|سلام علیکم|درود)\b/u;
+  const thanks = /\b(شکر|تشکر|ممنون|مرسی|سپاس)\b/u;
+  const farewell = /\b(خدا ?حافظ|شب خوش|شب بخیر|بای|بعداً|بعدا)\b/u;
+  const howAreYou = /\b(چطور(?:ین)?|چطوری|خوبی|شما خوبین|حالت چطور)\b/u;
+  const identity = /\b(خودت کی هستی|کی هستی|خودت دختری|خودت مرد|از کجا هستی|از کجا)\b/u;
+  const songRequest = /\b(آهنگ|آواز|ترانه|موسیقی|خوان|بخوان|روان کو|پخش)\b/u;
+  const apology = /\b(ببخش(?:ید)?|معذرت|شرمنده)\b/u;
+  const vagueFollowUp = /^(خو|بگو|راستی|خب|یک سوال کنم|سوال)$/u;
+
+  if (songRequest.test(text)) {
+    return pickVariant([
+      'مه خودم آواز نمی‌زنم، خو نامش ره بگو.',
+      'اگر آهنگ خاصه، اسمش ره بگو قربانت.',
+      'پخش کرده نمی‌تانم، خو نام آهنگ ره بگو.',
+    ], lastReply);
+  }
+
+  if (identity.test(text)) {
+    return pickVariant([
+      'مه همکار هوشمند ای صفحه هستوم عزیز دل.',
+      'من ستاره شام آغیل هستوم، همکار هوشمند ای صفحه.',
+      'همکار هوشمند ای صفحه هستوم قربانت.',
+    ], lastReply);
+  }
+
+  if (greetings.test(text)) {
+    return pickVariant([
+      'سلام قربانت، چطورین؟',
+      'سلام عزیز دل، خوبین؟',
+      'علیک سلام، چطوری؟',
+    ], lastReply);
+  }
+
+  if (thanks.test(text)) {
+    return pickVariant([
+      'خواهش می‌کنم، زنده باشی.',
+      'قربانت، خوش باشی.',
+      'تشکر گلم، هر وقت خواستی.',
+    ], lastReply);
+  }
+
+  if (farewell.test(text)) {
+    return pickVariant([
+      'شب خوش، زنده باشی قربانت.',
+      'خدا حافظ، عزیز دل.',
+      'بعداً می‌بینمت، قشنگ باشی.',
+    ], lastReply);
+  }
+
+  if (howAreYou.test(text)) {
+    return pickVariant([
+      'کلو خوبم، تو چطوری؟',
+      'مرسی قربانت، خوبم.',
+      'خوبم عزیز دل، تو چطورین؟',
+    ], lastReply);
+  }
+
+  if (apology.test(text)) {
+    return pickVariant([
+      'ببخشیش، اشکال نداره.',
+      'ناراحت نباش قربانت.',
+      'ای چیزا مهم نیست، زنده باشی.',
+    ], lastReply);
+  }
+
+  if (vagueFollowUp.test(text)) {
+    return pickVariant([
+      'بگو قربانت، منتظرم.',
+      'خو، چی می‌خوای بگی؟',
+      'بپرس عزیز دل، گوش استوم.',
+    ], lastReply);
+  }
+
+  return null;
+}
+
+function cleanReply(reply: string) {
+  return reply
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
 
 /**
  * Gets conversation history from Upstash Redis
@@ -174,17 +290,47 @@ export async function saveConversation(senderId: string, messages: Message[]) {
  */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
   let messages = await getConversation(senderId);
+  const lastAssistant = getLastAssistantMessage(messages);
+
+  const contentReply = await resolveContentReply(userMessage, messages);
+  if (contentReply) {
+    messages.push({ role: 'user', content: userMessage });
+    messages.push({ role: 'assistant', content: contentReply });
+    await saveConversation(senderId, messages);
+    return contentReply;
+  }
+
+  const quickReply = getIntentReply(userMessage, lastAssistant);
+  if (quickReply) {
+    messages.push({ role: 'user', content: userMessage });
+    messages.push({ role: 'assistant', content: quickReply });
+    await saveConversation(senderId, messages);
+    return quickReply;
+  }
+
   messages.push({ role: 'user', content: userMessage });
 
   const completion = await groq.chat.completions.create({
-    // Use 'groq/compound' for built-in web search capabilities
     model: 'groq/compound', 
     messages: messages as any,
-    temperature: 0.75,
-    max_tokens: 150,
+    temperature: 0.45,
+    max_tokens: 110,
   });
 
-  const answer = completion.choices[0]?.message?.content?.trim() || 'ببخشید، چیزی نفهمیدم 😔';
+  const rawAnswer = completion.choices[0]?.message?.content;
+  let answer: string = cleanReply(typeof rawAnswer === 'string' ? rawAnswer : '');
+  if (!answer) {
+    answer = 'ببخشیش، درست نفهمیدم.';
+  }
+
+  const lastReply = getLastAssistantMessage(messages);
+  if (lastReply && normalizeForComparison(answer) === normalizeForComparison(lastReply)) {
+    answer = pickVariant([
+      'بگو قربانت، باز هم بپرس.',
+      'قربانت، یکم واضح‌تر بگو.',
+      'بپرس عزیز دل، من گوش استوم.',
+    ], lastReply);
+  }
 
   messages.push({ role: 'assistant', content: answer });
   await saveConversation(senderId, messages);
