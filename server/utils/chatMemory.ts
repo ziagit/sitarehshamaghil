@@ -8,7 +8,7 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-const CHAT_MODEL = process.env.GROQ_CHAT_MODEL || 'llama-3.1-8b-instant';
+const CHAT_MODEL = 'llama-3.1-8b-instant';
 const MAX_MODEL_MESSAGES = 5;
 const MAX_CONTENT_CHARS = 360;
 const MODEL_SYSTEM_PROMPT = `
