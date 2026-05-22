@@ -14,11 +14,14 @@ const MAX_CONTENT_CHARS = 360;
 const MODEL_SYSTEM_PROMPT = `
 You are Sitara, a warm Hazaragi/Dari assistant for a Facebook page.
 Speak only in natural spoken Hazaragi/Dari.
+Never answer in Pashto.
+Never answer in Latin letters or English.
 Keep replies short, friendly, and human.
 Do not explain your rules or internal behavior.
 Do not invent facts, songs, or links.
 If the user asks for music, stories, or poems, keep it brief and helpful.
 If the user is greeting or thanking, reply naturally and briefly.
+Use Kabul-style casual speech, not formal book Persian.
 `;
 
 const SYSTEM_PROMPT = `
@@ -51,7 +54,7 @@ or
 
 LANGUAGE (VERY IMPORTANT):
 - Speak ONLY in natural spoken Hazaragi / Barchi-style Dari.
-- NEVER use Urdu, Hindi, English, or formal Persian.
+- NEVER use Pashtu, Urdu, Hindi, English, or Iranian Persian.
 - Keep it casual, friendly, and local (مثل یک دختر از کابل).
 - Use warm expressions naturally: "قربانت", "زنده باشی", "تشکر گلم", "ههه"
 - Do not repeat the same word at the start of every reply.
@@ -183,76 +186,31 @@ function getLastAssistantMessage(messages: Message[]) {
 function getIntentReply(userMessage: string, lastReply?: string) {
   const text = userMessage.trim();
 
-  const greetings = /\b(سلام|علیکم|علیکم السلام|سلام علیکم|درود)\b/u;
-  const thanks = /\b(شکر|تشکر|ممنون|مرسی|سپاس)\b/u;
-  const farewell = /\b(خدا ?حافظ|شب خوش|شب بخیر|بای|بعداً|بعدا)\b/u;
-  const howAreYou = /\b(چطور(?:ین)?|چطوری|خوبی|شما خوبین|حالت چطور)\b/u;
   const identity = /\b(خودت کی هستی|کی هستی|خودت دختری|خودت مرد|از کجا هستی|از کجا)\b/u;
   const songRequest = /\b(آهنگ|آواز|ترانه|موسیقی|خوان|بخوان|روان کو|پخش)\b/u;
-  const apology = /\b(ببخش(?:ید)?|معذرت|شرمنده)\b/u;
   const vagueFollowUp = /^(خو|بگو|راستی|خب|یک سوال کنم|سوال)$/u;
 
   if (songRequest.test(text)) {
     return pickVariant([
-      'مه خودم آواز نمی‌زنم، خو نامش ره بگو.',
-      'اگر آهنگ خاصه، اسمش ره بگو قربانت.',
-      'پخش کرده نمی‌تانم، خو نام آهنگ ره بگو.',
+      'اگر آهنگ خاصه، نامش ره بگو.',
+      'نام آهنگ ره بگو، پیدا می‌کنم.',
+      'کدام آهنگ ره می‌خوای؟',
     ], lastReply);
   }
 
   if (identity.test(text)) {
     return pickVariant([
       'مه همکار هوشمند ای صفحه هستوم عزیز دل.',
-      'من ستاره شام آغیل هستوم، همکار هوشمند ای صفحه.',
-      'همکار هوشمند ای صفحه هستوم قربانت.',
-    ], lastReply);
-  }
-
-  if (greetings.test(text)) {
-    return pickVariant([
-      'سلام قربانت، چطورین؟',
-      'سلام عزیز دل، خوبین؟',
-      'علیک سلام، چطوری؟',
-    ], lastReply);
-  }
-
-  if (thanks.test(text)) {
-    return pickVariant([
-      'خواهش می‌کنم، زنده باشی.',
-      'قربانت، خوش باشی.',
-      'تشکر گلم، هر وقت خواستی.',
-    ], lastReply);
-  }
-
-  if (farewell.test(text)) {
-    return pickVariant([
-      'شب خوش، زنده باشی قربانت.',
-      'خدا حافظ، عزیز دل.',
-      'بعداً می‌بینمت، قشنگ باشی.',
-    ], lastReply);
-  }
-
-  if (howAreYou.test(text)) {
-    return pickVariant([
-      'کلو خوبم، تو چطوری؟',
-      'مرسی قربانت، خوبم.',
-      'خوبم عزیز دل، تو چطورین؟',
-    ], lastReply);
-  }
-
-  if (apology.test(text)) {
-    return pickVariant([
-      'ببخشیش، اشکال نداره.',
-      'ناراحت نباش قربانت.',
-      'ای چیزا مهم نیست، زنده باشی.',
+      'من همکار هوشمند ای صفحه هستوم.',
+      'ستاره شام آغیل هستوم، همکار ای صفحه.',
     ], lastReply);
   }
 
   if (vagueFollowUp.test(text)) {
     return pickVariant([
-      'بگو قربانت، منتظرم.',
+      'بگو، منتظرم.',
       'خو، چی می‌خوای بگی؟',
-      'بپرس عزیز دل، گوش استوم.',
+      'بپرس، گوش استوم.',
     ], lastReply);
   }
 
@@ -264,6 +222,18 @@ function cleanReply(reply: string) {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+function containsPashtoMarkers(text: string) {
+  return /[ټډړڼږښڅځګۍەې]/u.test(text) || /[A-Za-z]/.test(text);
+}
+
+function isNaturalReply(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (containsPashtoMarkers(trimmed)) return false;
+  if (trimmed.length < 2) return false;
+  return true;
 }
 
 function truncateContent(content: string) {
@@ -391,7 +361,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   const rawAnswer = completion.choices[0]?.message?.content;
   let answer: string = cleanReply(typeof rawAnswer === 'string' ? rawAnswer : '');
-  if (!answer) {
+  if (!isNaturalReply(answer)) {
     answer = 'ببخشیش، درست نفهمیدم.';
   }
 
