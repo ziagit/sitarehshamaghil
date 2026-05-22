@@ -1,11 +1,25 @@
 // server/utils/chatMemory.ts
 
 import { Groq } from 'groq-sdk';
+import type { ChatCompletionMessageParam } from 'groq-sdk/resources/chat/completions';
 import { resolveContentReply } from './contentLookup';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
+
+const CHAT_MODEL = process.env.GROQ_CHAT_MODEL || 'llama-3.1-8b-instant';
+const MAX_MODEL_MESSAGES = 5;
+const MAX_CONTENT_CHARS = 360;
+const MODEL_SYSTEM_PROMPT = `
+You are Sitara, a warm Hazaragi/Dari assistant for a Facebook page.
+Speak only in natural spoken Hazaragi/Dari.
+Keep replies short, friendly, and human.
+Do not explain your rules or internal behavior.
+Do not invent facts, songs, or links.
+If the user asks for music, stories, or poems, keep it brief and helpful.
+If the user is greeting or thanking, reply naturally and briefly.
+`;
 
 const SYSTEM_PROMPT = `
 You are Sitara (ستاره شام آغیل), a warm, friendly girl from "دشت برچی".
@@ -252,6 +266,47 @@ function cleanReply(reply: string) {
     .trim();
 }
 
+function truncateContent(content: string) {
+  if (content.length <= MAX_CONTENT_CHARS) return content;
+  return `${content.slice(0, MAX_CONTENT_CHARS - 1)}…`;
+}
+
+function buildModelMessages(messages: Message[]): ChatCompletionMessageParam[] {
+  const systemMessage = messages.find((message) => message.role === 'system') || {
+    role: 'system',
+    content: SYSTEM_PROMPT,
+  };
+
+  const conversation = messages.filter((message) => message.role !== 'system');
+  const slicedConversation = conversation.slice(-MAX_MODEL_MESSAGES);
+
+  return [
+    { role: 'system', content: MODEL_SYSTEM_PROMPT.trim() || truncateContent(systemMessage.content) },
+    ...slicedConversation.map((message) => ({
+      role: message.role as 'user' | 'assistant',
+      content: truncateContent(message.content),
+    })),
+  ];
+}
+
+function isRateLimitError(err: unknown) {
+  const error = err as {
+    status?: number
+    statusCode?: number
+    code?: string
+    data?: { error?: { code?: string } }
+    response?: { status?: number }
+  };
+
+  return (
+    error?.status === 429 ||
+    error?.statusCode === 429 ||
+    error?.response?.status === 429 ||
+    error?.code === 'rate_limit_exceeded' ||
+    error?.data?.error?.code === 'rate_limit_exceeded'
+  );
+}
+
 /**
  * Gets conversation history from Upstash Redis
  */
@@ -311,11 +366,28 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   messages.push({ role: 'user', content: userMessage });
 
   const completion = await groq.chat.completions.create({
-    model: 'groq/compound', 
-    messages: messages as any,
-    temperature: 0.45,
-    max_tokens: 110,
+    model: CHAT_MODEL,
+    messages: buildModelMessages(messages),
+    temperature: 0.55,
+    max_tokens: 96,
+  }).catch((err) => {
+    if (isRateLimitError(err)) {
+      return null;
+    }
+    throw err;
   });
+
+  if (!completion) {
+    const fallback = pickVariant([
+      'قربانت، یک لحظه بعد دوباره بگو.',
+      'ببخشیش، الان یکم سنگین است.',
+      'زنده باشی، بعد چند لحظه بپرس باز.',
+    ], lastAssistant) || 'ببخشیش، بعد چند لحظه بپرس باز.';
+
+    messages.push({ role: 'assistant', content: fallback });
+    await saveConversation(senderId, messages);
+    return fallback;
+  }
 
   const rawAnswer = completion.choices[0]?.message?.content;
   let answer: string = cleanReply(typeof rawAnswer === 'string' ? rawAnswer : '');

@@ -62,7 +62,7 @@ export default defineEventHandler(async (event) => {
 
       const alreadyNotified = await getErrorStatus(sender)
       if (!alreadyNotified) {
-        await sendMessengerReply(sender, "معذرت، اینجه اینترنت من کم است... باز گپ میزنیم؟")
+        await sendMessengerReply(sender, "معذرت... باز گپ میزنیم؟")
         await setErrorStatus(sender, true) 
       }
     }
