@@ -12,20 +12,22 @@ const CHAT_MODEL = 'llama-3.1-8b-instant';
 const MAX_MODEL_MESSAGES = 5;
 const MAX_CONTENT_CHARS = 360;
 const MODEL_SYSTEM_PROMPT = `
-You are Sitara, a Facebook page assistant.
-Reply in natural, clear, easy-to-understand Dari.
-Do not use Pashto, English, or Latin letters.
-Keep replies human, concise, and friendly.
-Do not invent facts, songs, or links.
-Do not explain rules or internal behavior.
+You are Sitara. Reply only in clear Dari. Do not use Pashto or Latin letters.
+When asked about job, life, or work: ask what they already know and what skills they have, then give practical help that fits their skills, situation, and location.
+If they are a beginner, give beginner-friendly ideas. If they have skills, suggest better-fit opportunities.
+Give simple next steps for today, this week, and this month.
+Offer short examples when useful, such as a Facebook page idea, daily routine, work plan, or client message template.
+Suggest a Facebook page about their city, village, daily life, local places, or photos when relevant.
+If you mention money, say earnings are only examples and not guaranteed.
+Include a short motivational quote when helpful.
+End with one short follow-up question.
+Keep replies human, concise, and friendly. Do not invent facts, songs, or links.
 `;
 
 const SYSTEM_PROMPT = `
-You are Sitara, the assistant for this page.
-Stay natural and easy to understand.
+You are Sitara. Reply only in Dari and keep answers short, natural, and helpful.
 If the user asks about the bot, answer briefly and honestly.
 If the user is vague, ask one short follow-up question.
-Keep replies short unless the user clearly asks for more.
 `;
 
 const MAX_MESSAGES = 10;
@@ -63,13 +65,13 @@ function getLastAssistantMessage(messages: Message[]) {
 function getIntentReply(userMessage: string, lastReply?: string) {
   const text = userMessage.trim();
 
-  const songRequest = /\b(آهنگ|آواز|ترانه|موسیقی|خوان|بخوان|روان کو|پخش)\b/u;
+  const songRequest = /\b(آهنگ|ترانه|آواز|موسیقی|بخوان|پخش|روان کو)\b/u;
 
   if (songRequest.test(text)) {
     return pickVariant([
-      'اگر آهنگ خاصه، نامش ره بگو.',
-      'نام آهنگ ره بگو، پیدا می‌کنم.',
-      'کدام آهنگ ره می‌خوای؟',
+      'اگر آهنگ مشخصی در نظر داری، نامش را بگو.',
+      'نام آهنگ را بفرست تا تلاش کنم پیدایش کنم.',
+      'کدام آهنگ را می‌خواهی؟',
     ], lastReply);
   }
 
@@ -223,10 +225,10 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   if (!completion) {
     const fallback = pickVariant([
-      'قربانت، یک لحظه بعد دوباره بگو.',
-      'ببخشیش، الان یکم سنگین است.',
-      'زنده باشی، بعد چند لحظه بپرس باز.',
-    ], lastAssistant) || 'ببخشیش، بعد چند لحظه بپرس باز.';
+      'لطفاً یک لحظه بعد دوباره بپرس.',
+      'ببخشید، فعلاً کمی مصروف است.',
+      'بعد از چند لحظه دوباره بپرس.',
+    ], lastAssistant) || 'لطفاً یک لحظه بعد دوباره بپرس.';
 
     messages.push({ role: 'assistant', content: fallback });
     await saveConversation(senderId, messages);
@@ -236,15 +238,15 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   const rawAnswer = completion.choices[0]?.message?.content;
   let answer: string = collapseRepeatedWords(cleanReply(typeof rawAnswer === 'string' ? rawAnswer : ''));
   if (!isNaturalReply(answer)) {
-    answer = 'ببخشیش، درست نفهمیدم.';
+    answer = 'ببخشید، درست نفهمیدم.';
   }
 
   const lastReply = getLastAssistantMessage(messages);
   if (lastReply && normalizeForComparison(answer) === normalizeForComparison(lastReply)) {
     answer = pickVariant([
-      'بگو قربانت، باز هم بپرس.',
-      'قربانت، یکم واضح‌تر بگو.',
-      'بپرس عزیز دل، من گوش استوم.',
+      'لطفاً دوباره بپرس.',
+      'می‌شود کمی واضح‌تر بگویی؟',
+      'باز هم بپرس، کمک می‌کنم.',
     ], lastReply);
   }
 
