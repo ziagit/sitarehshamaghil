@@ -13,6 +13,7 @@ const MAX_MODEL_MESSAGES = 5;
 const MAX_CONTENT_CHARS = 360;
 const MODEL_SYSTEM_PROMPT = `
 You are Sitara. Reply only in clear Dari. Do not use Pashto or Latin letters.
+Only switch to English when the user explicitly asks to learn English or translate.
 When asked about job, life, or work: ask what they already know and what skills they have, then give practical help that fits their skills, situation, and location.
 If they are a beginner, give beginner-friendly ideas. If they have skills, suggest better-fit opportunities.
 Give simple next steps for today, this week, and this month.
@@ -100,14 +101,18 @@ function collapseRepeatedWords(text: string) {
   return output.join(' ');
 }
 
-function containsPashtoMarkers(text: string) {
-  return /[ټډړڼږښڅځګۍەې]/u.test(text) || /[A-Za-z]/.test(text);
+function wantsEnglishMode(text: string) {
+  return /\b(english|learn english|translate|translation|meaning|dari to english|english to dari)\b/i.test(text);
 }
 
-function isNaturalReply(text: string) {
+function containsPashtoMarkers(text: string, allowLatin = false) {
+  return /[ټډړڼږښڅځګۍەې]/u.test(text) || (!allowLatin && /[A-Za-z]/.test(text));
+}
+
+function isNaturalReply(text: string, allowLatin = false) {
   const trimmed = text.trim();
   if (!trimmed) return false;
-  if (containsPashtoMarkers(trimmed)) return false;
+  if (containsPashtoMarkers(trimmed, allowLatin)) return false;
   if (trimmed.length < 2) return false;
   return true;
 }
@@ -115,6 +120,38 @@ function isNaturalReply(text: string) {
 function truncateContent(content: string) {
   if (content.length <= MAX_CONTENT_CHARS) return content;
   return `${content.slice(0, MAX_CONTENT_CHARS - 1)}…`;
+}
+
+function getFallbackReply(allowLatin: boolean) {
+  return allowLatin
+    ? [
+        'Please ask again in a moment.',
+        'Sorry, it is a bit busy right now.',
+        'Try asking again in a few moments.',
+      ]
+    : [
+        'لطفاً یک لحظه بعد دوباره بپرس.',
+        'ببخشید، فعلاً کمی مصروف است.',
+        'بعد از چند لحظه دوباره بپرس.',
+      ];
+}
+
+function getInvalidReply(allowLatin: boolean) {
+  return allowLatin ? 'Sorry, I did not understand that.' : 'ببخشید، درست نفهمیدم.';
+}
+
+function getDuplicateReply(allowLatin: boolean) {
+  return allowLatin
+    ? [
+        'Please ask again.',
+        'Could you say that a little more clearly?',
+        'Ask me again and I will help.',
+      ]
+    : [
+        'لطفاً دوباره بپرس.',
+        'می‌شود کمی واضح‌تر بگویی؟',
+        'باز هم بپرس، کمک می‌کنم.',
+      ];
 }
 
 function buildModelMessages(messages: Message[]): ChatCompletionMessageParam[] {
@@ -192,6 +229,7 @@ export async function saveConversation(senderId: string, messages: Message[]) {
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
   let messages = await getConversation(senderId);
   const lastAssistant = getLastAssistantMessage(messages);
+  const allowLatin = wantsEnglishMode(userMessage);
 
   const contentReply = await resolveContentReply(userMessage, messages);
   if (contentReply) {
@@ -224,11 +262,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   });
 
   if (!completion) {
-    const fallback = pickVariant([
-      'لطفاً یک لحظه بعد دوباره بپرس.',
-      'ببخشید، فعلاً کمی مصروف است.',
-      'بعد از چند لحظه دوباره بپرس.',
-    ], lastAssistant) || 'لطفاً یک لحظه بعد دوباره بپرس.';
+    const fallback = pickVariant(getFallbackReply(allowLatin), lastAssistant) || getFallbackReply(allowLatin)[0];
 
     messages.push({ role: 'assistant', content: fallback });
     await saveConversation(senderId, messages);
@@ -237,17 +271,13 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   const rawAnswer = completion.choices[0]?.message?.content;
   let answer: string = collapseRepeatedWords(cleanReply(typeof rawAnswer === 'string' ? rawAnswer : ''));
-  if (!isNaturalReply(answer)) {
-    answer = 'ببخشید، درست نفهمیدم.';
+  if (!isNaturalReply(answer, allowLatin)) {
+    answer = getInvalidReply(allowLatin);
   }
 
   const lastReply = getLastAssistantMessage(messages);
   if (lastReply && normalizeForComparison(answer) === normalizeForComparison(lastReply)) {
-    answer = pickVariant([
-      'لطفاً دوباره بپرس.',
-      'می‌شود کمی واضح‌تر بگویی؟',
-      'باز هم بپرس، کمک می‌کنم.',
-    ], lastReply);
+    answer = pickVariant(getDuplicateReply(allowLatin), lastReply);
   }
 
   messages.push({ role: 'assistant', content: answer });
