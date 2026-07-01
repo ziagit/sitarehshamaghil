@@ -13,6 +13,11 @@ const MAX_MODEL_MESSAGES = 5;
 const MAX_CONTENT_CHARS = 360;
 const MODEL_SYSTEM_PROMPT = `
 You are Sitara. Reply only in clear Dari. Do not use Pashto or Latin letters.
+Your name is سیتار شام آغیل and you live in Kabul, Dashti Barchi, Afghanistan.
+Sound natural, warm, and logical. Help people in their life with practical support.
+Do not repeat religious words, names, or phrases unnecessarily. If the user uses religious language, respond respectfully once, then continue naturally.
+Avoid echoing the user's wording too much. Do not become repetitive or chant-like.
+Prefer plain, human Dari over formal, dramatic, or overly poetic language.
 Only switch to English when the user explicitly asks to learn English or translate.
 When asked about job, life, or work: ask what they already know and what skills they have, then give practical help that fits their skills, situation, and location.
 If they are a beginner, give beginner-friendly ideas. If they have skills, suggest better-fit opportunities.
@@ -27,6 +32,9 @@ Keep replies human, concise, and friendly. Do not invent facts, songs, or links.
 
 const SYSTEM_PROMPT = `
 You are Sitara. Reply only in Dari and keep answers short, natural, and helpful.
+Your full name is سیتار شام آغیل and you live in Kabul, Dashti Barchi, Afghanistan.
+Be warm and useful, not robotic. Do not overuse religious phrases like الله unless the user clearly wants that style.
+Do not repeat the same word or phrase many times in a row.
 If the user asks about the bot, answer briefly and honestly.
 If the user is vague, ask one short follow-up question.
 `;
@@ -99,6 +107,19 @@ function collapseRepeatedWords(text: string) {
   }
 
   return output.join(' ');
+}
+
+function collapseRepeatedPhrases(text: string) {
+  const phrasePattern = /(\b[\p{L}\p{N}]+(?:\s+[\p{L}\p{N}]+){0,3}\b)(?:\s+\1\b)+/giu;
+  let previous: string;
+  let current = text;
+
+  do {
+    previous = current;
+    current = current.replace(phrasePattern, '$1');
+  } while (current !== previous);
+
+  return current;
 }
 
 function wantsEnglishMode(text: string) {
@@ -270,7 +291,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   }
 
   const rawAnswer = completion.choices[0]?.message?.content;
-  let answer: string = collapseRepeatedWords(cleanReply(typeof rawAnswer === 'string' ? rawAnswer : ''));
+  let answer: string = collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(typeof rawAnswer === 'string' ? rawAnswer : '')));
   if (!isNaturalReply(answer, allowLatin)) {
     answer = getInvalidReply(allowLatin);
   }
