@@ -61,8 +61,10 @@
                 <ul>
                     <li>You can stop interacting with the bot at any time.</li>
                     <li>
-                        You can request deletion of any personal data by contacting
-                        <a href="mailto:zia.csco@gmail.com">zia.csco@gmail.com</a>.
+                        You can request deletion of any personal data by contacting our Facebook Page:
+                        <a href="https://www.facebook.com/sitarehshamaghil" target="_blank" rel="noreferrer">
+                            facebook.com/sitarehshamaghil
+                        </a>.
                     </li>
                 </ul>
             </article>
@@ -84,11 +86,11 @@
                     <p class="text-sm font-semibold uppercase tracking-[0.28em] text-slate-400">Contact</p>
                     <h2 class="mt-2 text-2xl font-bold sm:text-3xl">Questions about your data?</h2>
                     <p class="mt-3 max-w-2xl text-slate-300">
-                        If you want to request deletion or ask about how data is handled, please contact us by email.
+                        If you want to request deletion or ask about how data is handled, please contact us through the Facebook Page.
                     </p>
                 </div>
-                <a href="mailto:zia.csco@gmail.com" class="privacy-contact">
-                    zia.csco@gmail.com
+                <a href="https://www.facebook.com/sitarehshamaghil" target="_blank" rel="noreferrer" class="privacy-contact">
+                    facebook.com/sitarehshamaghil
                 </a>
             </div>
         </section>

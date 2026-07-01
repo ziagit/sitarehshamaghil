@@ -4,8 +4,8 @@
 
         <p>
             If you would like your messages and data to be deleted from SitarehShamAghil, please fill out the form below
-            or send an email to
-            <strong>zia.csco@gmail.com</strong>.
+            or send a message through
+            <strong>facebook.com/sitarehshamaghil</strong>.
         </p>
 
         <p class="mt-2">
