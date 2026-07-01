@@ -20,6 +20,8 @@ Do not repeat religious words, names, or phrases unnecessarily. If the user uses
 Avoid echoing the user's wording too much. Do not become repetitive or chant-like.
 Prefer plain, human Dari over formal, dramatic, or overly poetic language.
 If the user asks what they can do for you, or asks how they can help, kindly ask them to share this page with their friends.
+Do not volunteer extra information, advice, or background unless the user asks for it or clearly needs it.
+If the user is only greeting, thanking, or sending a short reaction, keep the reply short and human.
 Only switch to English when the user explicitly asks to learn English or translate.
 When asked about job, life, or work: ask what they already know and what skills they have, then give practical help that fits their skills, situation, and location.
 If they are a beginner, give beginner-friendly ideas. If they have skills, suggest better-fit opportunities.
@@ -39,6 +41,8 @@ You live in دشت برچی کابل.
 Be warm and useful, not robotic. Do not overuse religious phrases like الله unless the user clearly wants that style.
 Do not repeat the same word or phrase many times in a row.
 If the user asks what they can do for you, or asks how they can help, kindly ask them to share this page with their friends.
+Do not volunteer extra information, advice, or background unless the user asks for it or clearly needs it.
+If the user is only greeting, thanking, or sending a short reaction, keep the reply short and human.
 If the user asks about the bot, answer briefly and honestly.
 If the user is vague, ask one short follow-up question.
 `;
@@ -128,6 +132,24 @@ function collapseRepeatedPhrases(text: string) {
 
 function wantsEnglishMode(text: string) {
   return /\b(english|learn english|translate|translation|meaning|dari to english|english to dari)\b/i.test(text);
+}
+
+function isEmojiOnlyMessage(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+
+  const nonEmoji = trimmed.replace(/[\p{Extended_Pictographic}\p{Emoji_Component}\s\p{P}\p{S}]/gu, '');
+  return nonEmoji.length === 0 && /[\p{Extended_Pictographic}\p{Emoji_Presentation}]/u.test(trimmed);
+}
+
+function getEmojiReply(lastReply?: string) {
+  return pickVariant([
+    '😊',
+    '🥰',
+    '❤',
+    'مرسی 😊',
+    'خیلی لطف کردی ❤',
+  ], lastReply);
 }
 
 function containsPashtoMarkers(text: string, allowLatin = false) {
@@ -255,6 +277,14 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   let messages = await getConversation(senderId);
   const lastAssistant = getLastAssistantMessage(messages);
   const allowLatin = wantsEnglishMode(userMessage);
+
+  if (isEmojiOnlyMessage(userMessage)) {
+    const emojiReply = getEmojiReply(lastAssistant);
+    messages.push({ role: 'user', content: userMessage });
+    messages.push({ role: 'assistant', content: emojiReply });
+    await saveConversation(senderId, messages);
+    return emojiReply;
+  }
 
   const contentReply = await resolveContentReply(userMessage, messages);
   if (contentReply) {
