@@ -12,7 +12,7 @@
           </div>
 
           <h1 class="mt-6 text-4xl font-black tracking-tight text-white sm:text-5xl lg:text-7xl">
-            سیتار شام آغیل
+            ستاره شام آغیل
           </h1>
 
           <p class="mt-5 max-w-2xl text-lg leading-8 text-slate-300 sm:text-xl">
@@ -188,7 +188,7 @@
             <div class="border-t border-white/10 bg-white/5 p-6 sm:p-8 lg:border-l lg:border-t-0">
               <p class="text-sm font-semibold uppercase tracking-[0.28em] text-slate-500">Assistant identity</p>
               <ul class="mt-4 space-y-3 text-sm leading-7 text-slate-300">
-                <li>• Name: سیتاره / سیتاره شام آغیل</li>
+                <li>• Name: ستاره / ستاره شام آغیل</li>
                 <li>• Community: Hazara / هزاره</li>
                 <li>• Location: دشت برچی کابل</li>
                 <li>• Goal: help people in life with practical support</li>
