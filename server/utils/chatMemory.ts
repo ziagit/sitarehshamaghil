@@ -20,15 +20,24 @@ const MAX_MESSAGES = 20;
 
 const MAX_CONTENT_CHARS = 360;
 
+// The exact, fixed reply used whenever someone directly asks whether
+// this is a human or a bot/AI. Kept as a hardcoded intercept (see
+// isIdentityQuestion below) rather than relying on the model to follow
+// a "say exactly this" instruction, since an 8B model won't reliably
+// reproduce an exact fixed phrase consistently over many turns.
+const IDENTITY_REPLY = ' من یک همکار هوشمندم';
+
 // Single source of truth for the model's persona and behavior.
 // Keep this short. Every extra rule you add makes an 8B model sound
 // more like it's filling out a template and less like a person.
 const SYSTEM_PROMPT = `
-You are ستاره, a young Hazara woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
+You are ستاره, a young هزاره woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
 
 By default, speak only in natural, everyday Dari written in Arabic/Persian script. If the user explicitly asks for English or translation, answer in the requested language.
 
 Talk like a real person texting a friend, not an assistant or a coach. Keep replies short, warm, and direct.
+
+Never say or imply that you are a bot, an AI, a computer program, a chatbot, or a virtual assistant. Never break character. If someone directly asks whether you are a human or a bot/AI, reply with exactly: «من یک همکار هوشمندم» and nothing more added to it unless they ask a follow-up question.
 
 Do not offer advice, suggestions, plans, or guidance unless the user clearly and directly asks for it. If someone is just greeting you, chatting, venting, or reacting, simply talk with them like a friend would — do not turn it into advice or a coaching session.
 
@@ -37,6 +46,8 @@ Never use numbered steps, "today / this week / this month" plans, bullet lists, 
 Never repeat a suggestion the user has already said doesn't work, that they rejected, or that they don't have access to.
 
 Stay consistent about your own life. Your name is ستاره, you are Hazara, and you live in دشت برچی, کابل. Do not invent new personal details (a husband, a job, other neighborhoods, extra family members) beyond what has already come up in this conversation. If asked something about yourself that you've already answered earlier in the chat, answer the same way again.
+
+Never contradict a fact you already stated about your own life, even to sound sympathetic or relatable. If the user shares something about their own life or family (for example, that they don't have a father, or lost someone), respond to them with warmth, but do not copy their situation onto yourself or change a fact about yourself that you already gave earlier in the conversation.
 
 Do not mention Facebook pages, side businesses, or ask the user to share anything, unless the user brings it up first.
 
@@ -75,6 +86,30 @@ function getLastAssistantMessage(messages: Message[]) {
     if (messages[i].role === 'assistant') return messages[i].content;
   }
   return undefined;
+}
+
+// Catches direct "are you human / are you a bot / are you AI" questions,
+// in both Dari and English phrasings, so IDENTITY_REPLY is returned
+// reliably every time, regardless of what the model itself would say.
+//
+// NOTE: deliberately does NOT use \b (word boundary) around the Persian
+// words. In JS regex, \b is defined using the ASCII \w class
+// (A-Z a-z 0-9 _), which does not include Persian letters — so \b never
+// finds a "boundary" around Persian script and patterns like
+// \bهوش مصنوعی\b silently fail to match anything. Plain substring
+// matching is used instead for the Persian side.
+const IDENTITY_SELF_REF_WORDS = /(انسان|آدم|واقعی|زنده|ربات|روبات|روباط|بات|هوش\s?مصنوعی|مصنوعی|human|real|person|bot|ai|robot)/iu;
+const IDENTITY_BEING_VERB = /(هستی|استی|میباشی)/u;
+const IDENTITY_EN_DIRECT = /are\s+you\s+(a\s+)?(human|real|person|bot|ai|robot)/i;
+
+function isIdentityQuestion(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (IDENTITY_EN_DIRECT.test(trimmed)) return true;
+  // Require both a self-reference word (انسان/ربات/هوش مصنوعی/etc.) AND
+  // a 2nd-person "are you" verb (هستی/استی) in the same message, so
+  // statements about a third party ("او انسان خوبی هست") don't false-trigger.
+  return IDENTITY_SELF_REF_WORDS.test(trimmed) && IDENTITY_BEING_VERB.test(trimmed);
 }
 
 function getIntentReply(userMessage: string, lastReply?: string) {
@@ -293,6 +328,17 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     messages.push({ role: 'assistant', content: emojiReply });
     await saveConversation(senderId, messages);
     return emojiReply;
+  }
+
+  // Deterministic override: always answer "are you human/bot/AI?" with
+  // the fixed identity line, regardless of what the model or content
+  // lookup would otherwise say. Checked before contentReply so nothing
+  // else can override it.
+  if (isIdentityQuestion(userMessage)) {
+    messages.push({ role: 'user', content: userMessage });
+    messages.push({ role: 'assistant', content: IDENTITY_REPLY });
+    await saveConversation(senderId, messages);
+    return IDENTITY_REPLY;
   }
 
   const contentReply = await resolveContentReply(userMessage, messages);
