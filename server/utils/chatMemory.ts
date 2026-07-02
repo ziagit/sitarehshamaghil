@@ -9,45 +9,43 @@ const groq = new Groq({
 });
 
 const CHAT_MODEL = 'llama-3.1-8b-instant';
-const MAX_MODEL_MESSAGES = 5;
+
+// How many prior turns get sent to the model. Raised from 5 -> 12 so the
+// bot can remember earlier facts (family, location, past rejections)
+// in longer conversations instead of contradicting itself.
+const MAX_MODEL_MESSAGES = 12;
+
+// How many turns get persisted to Redis per user.
+const MAX_MESSAGES = 20;
+
 const MAX_CONTENT_CHARS = 360;
-const MODEL_SYSTEM_PROMPT = `
-You are Sitara. Reply only in clear Dari. Do not use Pashto or Latin letters.
-Your name is سیتاره or سیتاره شام آغیل. You belong to the Hazara community in Afghanistan.
-You live in دشت برچی, کابل, Afghanistan.
-Sound natural, warm, and logical. Help people in their life with practical support.
-Do not repeat religious words, names, or phrases unnecessarily. If the user uses religious language, respond respectfully once, then continue naturally.
-Avoid echoing the user's wording too much. Do not become repetitive or chant-like.
-Prefer plain, human Dari over formal, dramatic, or overly poetic language.
-If the user asks what they can do for you, or asks how they can help, kindly ask them to share this page with their friends.
-Do not volunteer extra information, advice, or background unless the user asks for it or clearly needs it.
-If the user is only greeting, thanking, or sending a short reaction, keep the reply short and human.
-Only switch to English when the user explicitly asks to learn English or translate.
-When asked about job, life, or work: ask what they already know and what skills they have, then give practical help that fits their skills, situation, and location.
-If they are a beginner, give beginner-friendly ideas. If they have skills, suggest better-fit opportunities.
-Give simple next steps for today, this week, and this month.
-Offer short examples when useful, such as a Facebook page idea, daily routine, work plan, or client message template.
-Suggest a Facebook page about their city, village, daily life, local places, or photos when relevant.
-If you mention money, say earnings are only examples and not guaranteed.
-Include a short motivational quote when helpful.
-End with one short follow-up question.
-Keep replies human, concise, and friendly. Do not invent facts, songs, or links.
-`;
 
+// Single source of truth for the model's persona and behavior.
+// Keep this short. Every extra rule you add makes an 8B model sound
+// more like it's filling out a template and less like a person.
 const SYSTEM_PROMPT = `
-You are Sitara. Reply only in Dari and keep answers short, natural, and helpful.
-Your name is سیتاره or سیتاره شام آغیل. You belong to the Hazara community in Afghanistan.
-You live in دشت برچی کابل.
-Be warm and useful, not robotic. Do not overuse religious phrases like الله unless the user clearly wants that style.
-Do not repeat the same word or phrase many times in a row.
-If the user asks what they can do for you, or asks how they can help, kindly ask them to share this page with their friends.
-Do not volunteer extra information, advice, or background unless the user asks for it or clearly needs it.
-If the user is only greeting, thanking, or sending a short reaction, keep the reply short and human.
-If the user asks about the bot, answer briefly and honestly.
-If the user is vague, ask one short follow-up question.
+You are ستاره, a young Hazara woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
+
+By default, speak only in natural, everyday Dari written in Arabic/Persian script. If the user explicitly asks for English or translation, answer in the requested language.
+
+Talk like a real person texting a friend, not an assistant or a coach. Keep replies short, warm, and direct.
+
+Do not offer advice, suggestions, plans, or guidance unless the user clearly and directly asks for it. If someone is just greeting you, chatting, venting, or reacting, simply talk with them like a friend would — do not turn it into advice or a coaching session.
+
+Never use numbered steps, "today / this week / this month" plans, bullet lists, or motivational quotes unless the user explicitly asks for structured help.
+
+Never repeat a suggestion the user has already said doesn't work, that they rejected, or that they don't have access to.
+
+Stay consistent about your own life. Your name is ستاره, you are Hazara, and you live in دشت برچی, کابل. Do not invent new personal details (a husband, a job, other neighborhoods, extra family members) beyond what has already come up in this conversation. If asked something about yourself that you've already answered earlier in the chat, answer the same way again.
+
+Do not mention Facebook pages, side businesses, or ask the user to share anything, unless the user brings it up first.
+
+If the user sends only an emoji, a greeting, or a short reaction, reply just as short.
+
+Do not repeat the same word or phrase multiple times in a row.
 `;
 
-const MAX_MESSAGES = 10;
+const MODEL_SYSTEM_PROMPT = SYSTEM_PROMPT;
 
 type Message = {
   role: 'system' | 'user' | 'assistant';
@@ -117,8 +115,11 @@ function collapseRepeatedWords(text: string) {
   return output.join(' ');
 }
 
+// Matches repeated phrases even when separated by punctuation
+// (e.g. "خوشحال شم، خوشحال شم" — comma was previously missed
+// because the old pattern only matched whitespace-separated repeats).
 function collapseRepeatedPhrases(text: string) {
-  const phrasePattern = /(\b[\p{L}\p{N}]+(?:\s+[\p{L}\p{N}]+){0,3}\b)(?:\s+\1\b)+/giu;
+  const phrasePattern = /(\b[\p{L}\p{N}]+(?:\s+[\p{L}\p{N}]+){0,3}\b)(?:[\s,،]+\1\b)+/giu;
   let previous: string;
   let current = text;
 
@@ -147,7 +148,7 @@ function getEmojiReply(lastReply?: string) {
     '😊',
     '🥰',
     '❤',
-    'مرسی 😊',
+    'تشکر 😊',
     'خیلی لطف کردی ❤',
   ], lastReply);
 }
@@ -156,10 +157,23 @@ function containsPashtoMarkers(text: string, allowLatin = false) {
   return /[ټډړڼږښڅځګۍەې]/u.test(text) || (!allowLatin && /[A-Za-z]/.test(text));
 }
 
+// Whitelist-based check instead of blacklisting known-bad scripts.
+// The old code only blocked Pashto letters + Latin, so the model was
+// free to leak Thai, Cyrillic, Chinese, etc. under prompt pressure
+// (observed in production: "راถามید", "різні", "зрозумندى").
+// Allowed: Arabic/Persian script blocks, digits (Latin + Arabic-Indic +
+// extended Arabic-Indic), whitespace, common punctuation, and emoji.
+const ALLOWED_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\u200D\s0-9٠-٩۰-۹.,!?؟،؛:()\-"'%\u2600-\u27BF\u{1F300}-\u{1FAFF}]/gu;
+
+function containsForeignScript(text: string) {
+  return text.replace(ALLOWED_CHARS, '').length > 0;
+}
+
 function isNaturalReply(text: string, allowLatin = false) {
   const trimmed = text.trim();
   if (!trimmed) return false;
   if (containsPashtoMarkers(trimmed, allowLatin)) return false;
+  if (!allowLatin && containsForeignScript(trimmed)) return false;
   if (trimmed.length < 2) return false;
   return true;
 }
@@ -178,7 +192,7 @@ function getFallbackReply(allowLatin: boolean) {
       ]
     : [
         'لطفاً یک لحظه بعد دوباره بپرس.',
-        'ببخشید، فعلاً کمی مصروف است.',
+        'ببخشید، فعلاً کمی مصروفم.',
         'بعد از چند لحظه دوباره بپرس.',
       ];
 }
@@ -196,22 +210,17 @@ function getDuplicateReply(allowLatin: boolean) {
       ]
     : [
         'لطفاً دوباره بپرس.',
-        'می‌شود کمی واضح‌تر بگویی؟',
+        'میشه کمی واضح‌تر بگویی؟',
         'باز هم بپرس، کمک می‌کنم.',
       ];
 }
 
 function buildModelMessages(messages: Message[]): ChatCompletionMessageParam[] {
-  const systemMessage = messages.find((message) => message.role === 'system') || {
-    role: 'system',
-    content: SYSTEM_PROMPT,
-  };
-
   const conversation = messages.filter((message) => message.role !== 'system');
   const slicedConversation = conversation.slice(-MAX_MODEL_MESSAGES);
 
   return [
-    { role: 'system', content: MODEL_SYSTEM_PROMPT.trim() || truncateContent(systemMessage.content) },
+    { role: 'system', content: MODEL_SYSTEM_PROMPT.trim() },
     ...slicedConversation.map((message) => ({
       role: message.role as 'user' | 'assistant',
       content: truncateContent(message.content),
@@ -241,7 +250,7 @@ function isRateLimitError(err: unknown) {
  * Gets conversation history from Upstash Redis
  */
 export async function getConversation(senderId: string): Promise<Message[]> {
-  const storage = useStorage('chat'); 
+  const storage = useStorage('chat');
   const key = `chat:${senderId}`;
 
   let messages = await storage.getItem<Message[]>(key);
@@ -257,13 +266,13 @@ export async function getConversation(senderId: string): Promise<Message[]> {
  * Saves conversation history to Upstash Redis
  */
 export async function saveConversation(senderId: string, messages: Message[]) {
-  const storage = useStorage('chat'); 
+  const storage = useStorage('chat');
   const key = `chat:${senderId}`;
 
-  const systemMessage = messages.find(m => m.role === 'system') || { role: 'system', content: SYSTEM_PROMPT };
-  const conversationMessages = messages.filter(m => m.role !== 'system');
+  const systemMessage = messages.find((m) => m.role === 'system') || { role: 'system' as const, content: SYSTEM_PROMPT };
+  const conversationMessages = messages.filter((m) => m.role !== 'system');
 
-  // Trim to keep last 10 messages
+  // Trim to keep last N messages
   const trimmedConversation = conversationMessages.slice(-MAX_MESSAGES);
   const finalHistory = [systemMessage, ...trimmedConversation];
 
@@ -271,7 +280,7 @@ export async function saveConversation(senderId: string, messages: Message[]) {
 }
 
 /**
- * Main AI function using Groq SDK and Compound model for built-in web search
+ * Main AI function using Groq SDK
  */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
   let messages = await getConversation(senderId);
@@ -308,7 +317,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     model: CHAT_MODEL,
     messages: buildModelMessages(messages),
     temperature: 0.55,
-    max_tokens: 96,
+    max_tokens: 180,
   }).catch((err) => {
     if (isRateLimitError(err)) {
       return null;
@@ -347,7 +356,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 export async function getErrorStatus(senderId: string): Promise<boolean> {
   const storage = useStorage('chat');
   const key = `error:${senderId}`;
-  
+
   const errorData = await storage.getItem<{ active: boolean; timestamp: number }>(key);
   if (!errorData) return false;
 
@@ -364,7 +373,7 @@ export async function getErrorStatus(senderId: string): Promise<boolean> {
 export async function setErrorStatus(senderId: string, status: boolean): Promise<void> {
   const storage = useStorage('chat');
   const key = `error:${senderId}`;
-  
+
   if (!status) {
     await storage.removeItem(key);
   } else {
