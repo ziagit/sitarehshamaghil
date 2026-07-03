@@ -16,6 +16,8 @@
 
         <nav class="hidden items-center gap-3 sm:flex">
           <NuxtLink href="/" class="nav-link">Home</NuxtLink>
+          <NuxtLink href="/image-generator" class="nav-link">Image Generator</NuxtLink>
+          <NuxtLink href="/text-to-speech" class="nav-link">Text to Speech</NuxtLink>
           <NuxtLink href="/privacy" class="nav-link">Privacy</NuxtLink>
         </nav>
       </div>
@@ -30,6 +32,8 @@
         <p>© 2026 SitarehShamAghil. All rights reserved.</p>
         <div class="flex items-center gap-4">
           <NuxtLink href="/privacy" class="footer-link">Privacy Policy</NuxtLink>
+          <NuxtLink href="/image-generator" class="footer-link">Image Generator</NuxtLink>
+          <NuxtLink href="/text-to-speech" class="footer-link">Text to Speech</NuxtLink>
           <NuxtLink href="/" class="footer-link">Home</NuxtLink>
         </div>
       </div>

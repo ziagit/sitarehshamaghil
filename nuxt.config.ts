@@ -9,6 +9,8 @@ export default defineNuxtConfig({
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
     FACEBOOK_PAGE_TOKEN: process.env.FACEBOOK_PAGE_TOKEN,
     GROQ_API_KEY: process.env.GROQ_API_KEY,
+    POLLINATIONS_API_KEY: process.env.POLLINATIONS_API_KEY,
+    POLLINATIONS_BASE_URL: process.env.POLLINATIONS_BASE_URL,
   },
 
   nitro: {

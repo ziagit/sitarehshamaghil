@@ -25,7 +25,82 @@ const MAX_CONTENT_CHARS = 360;
 // isIdentityQuestion below) rather than relying on the model to follow
 // a "say exactly this" instruction, since an 8B model won't reliably
 // reproduce an exact fixed phrase consistently over many turns.
-const IDENTITY_REPLY = ' من یک همکار هوشمندم';
+const IDENTITY_REPLY = 'من یک همکار هوشمندم';
+
+// ---- Content moderation (sexual/explicit language) ----
+//
+// First violation: ask the user to stop.
+// Second violation (after being warned): send MODERATION_FINAL_REPLY and
+// permanently stop responding to that user (see getModerationStatus /
+// setModerationStatus and the block check at the top of getAIResponse).
+const MODERATION_WARNING_REPLY = 'لطفاً در مورد این موضوعات با من صحبت نکن، این‌جا جای این حرف‌ها نیست.';
+const MODERATION_FINAL_REPLY = 'خدا حافظ عزیز دل لطفا اخلاق خود را درست کن';
+
+function escapeRegExp(str: string) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Explicit/vulgar terms provided by the site owner. Multi-word phrases
+// are split on spaces and joined with a flexible separator so spacing
+// or a zero-width non-joiner between words doesn't let anything slip
+// through (e.g. "سکس کردن" / "سکس‌کردن" both match).
+const INAPPROPRIATE_PHRASES = [
+  'سکس کردن', 'رابطه جنسی', 'آمیزش', 'دخول',
+  'پورنوگرافی', 'پورنو', 'پورن', 'فیلم سکسی', 'عکس سکسی',
+  'سکس',
+  'آلت تناسلی', 'آلت', 'بیضه', 'کون', 'ماتحت', 'کوس', 'کیر',
+];
+
+const MODERATION_FLEX_SEP = '[\\s\\u200c\\u200d]+';
+function toModerationPattern(phrase: string) {
+  return phrase.split(' ').map(escapeRegExp).join(MODERATION_FLEX_SEP);
+}
+
+// Word-boundary-aware: requires a non-letter/non-digit on both sides so
+// short entries like "کوس" or "کون" don't match inside unrelated words.
+// JS \b doesn't work for this (it's ASCII-only), so this uses explicit
+// unicode-aware lookaround instead.
+const INAPPROPRIATE_PATTERN = new RegExp(
+  `(?<![\\p{L}\\p{N}])(${INAPPROPRIATE_PHRASES.map(toModerationPattern).join('|')})(?![\\p{L}\\p{N}])`,
+  'iu',
+);
+
+// "آلت" also means "instrument" in a non-sexual sense (آلت موسیقی =
+// musical instrument), so that specific phrase is stripped out before
+// matching so it doesn't trigger.
+const MODERATION_SAFE_EXCEPTIONS = [
+  /آلت(‌ها|های)?[\s\u200c\u200d]*موسیقی/giu,
+];
+
+function containsInappropriateLanguage(text: string): boolean {
+  let sanitized = text;
+  for (const exception of MODERATION_SAFE_EXCEPTIONS) {
+    sanitized = sanitized.replace(exception, ' ');
+  }
+  return INAPPROPRIATE_PATTERN.test(sanitized);
+}
+
+type ModerationStatus = {
+  warned: boolean;
+  blocked: boolean;
+};
+
+/**
+ * Moderation state per user, stored in Redis. Does not auto-expire:
+ * once someone is blocked, they stay blocked until manually cleared.
+ */
+export async function getModerationStatus(senderId: string): Promise<ModerationStatus> {
+  const storage = useStorage('chat');
+  const key = `moderation:${senderId}`;
+  const status = await storage.getItem<ModerationStatus>(key);
+  return status || { warned: false, blocked: false };
+}
+
+export async function setModerationStatus(senderId: string, status: ModerationStatus): Promise<void> {
+  const storage = useStorage('chat');
+  const key = `moderation:${senderId}`;
+  await storage.setItem(key, status);
+}
 
 // Single source of truth for the model's persona and behavior.
 // Keep this short. Every extra rule you add makes an 8B model sound
@@ -33,7 +108,9 @@ const IDENTITY_REPLY = ' من یک همکار هوشمندم';
 const SYSTEM_PROMPT = `
 You are ستاره, a young هزاره woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
 
-By default, speak only in natural, everyday Dari written in Arabic/Persian script. If the user explicitly asks for English or translation, answer in the requested language.
+By default, always reply only in Dari, written in Arabic/Persian script — no exceptions. Never mix in a single English word while chatting in Dari; no code-switching mid-sentence or mid-reply.
+
+If, and only if, the user clearly asks to practice, learn, or speak English, switch entirely to English for that exchange, and keep replying in English for as long as the user keeps writing to you in English. The moment the user writes in Dari again, immediately switch back to Dari and stay there — do not keep any English mixed in after that.
 
 Talk like a real person texting a friend, not an assistant or a coach. Keep replies short, warm, and direct.
 
@@ -166,8 +243,35 @@ function collapseRepeatedPhrases(text: string) {
   return current;
 }
 
+// Detects when the user wants to speak/practice English, so the assistant
+// can switch out of Dari for that exchange. Three ways this triggers:
+//
+// 1. An explicit request typed in English ("let's practice english").
+// 2. An explicit request typed in Dari ("میخوام انگلیسی تمرین کنم") —
+//    without this, a Dari-phrased request would never match.
+// 3. The user's current message is itself written mostly in Latin
+//    script — this lets an English practice session continue turn by
+//    turn without the user having to repeat the request every message.
+//    A minimum letter count avoids false-triggering on short universal
+//    reactions like "OK". As soon as the user writes in Dari again,
+//    this naturally goes back to false on its own.
 function wantsEnglishMode(text: string) {
-  return /\b(english|learn english|translate|translation|meaning|dari to english|english to dari)\b/i.test(text);
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+
+  const englishTrigger = /\b(english|learn english|practice english|speak english|translate|translation|meaning|dari to english|english to dari)\b/i;
+  if (englishTrigger.test(trimmed)) return true;
+
+  const dariRequestsEnglish = /انگلیسی/u.test(trimmed)
+    && /(یاد|تمرین|صحبت|تدریس|درس|بگو|بگذار|میخوا|می‌خوا)/u.test(trimmed);
+  if (dariRequestsEnglish) return true;
+
+  const latinLetters = (trimmed.match(/[A-Za-z]/g) || []).length;
+  const persianLetters = (trimmed.match(/[\u0600-\u06FF]/g) || []).length;
+  const totalLetters = latinLetters + persianLetters;
+  if (totalLetters >= 6 && latinLetters / totalLetters > 0.6) return true;
+
+  return false;
 }
 
 function isEmojiOnlyMessage(text: string) {
@@ -318,9 +422,38 @@ export async function saveConversation(senderId: string, messages: Message[]) {
  * Main AI function using Groq SDK
  */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
+  // Content moderation gate — runs before anything else.
+  //
+  // If this user was already blocked (they got a warning and used
+  // explicit language again anyway), stop responding entirely. This
+  // returns an empty string on purpose: the calling webhook code should
+  // check for '' and simply not send anything to Facebook Messenger for
+  // that case, rather than sending an empty message.
+  const moderationStatus = await getModerationStatus(senderId);
+  if (moderationStatus.blocked) {
+    return '';
+  }
+
   let messages = await getConversation(senderId);
   const lastAssistant = getLastAssistantMessage(messages);
   const allowLatin = wantsEnglishMode(userMessage);
+
+  if (containsInappropriateLanguage(userMessage)) {
+    if (!moderationStatus.warned) {
+      await setModerationStatus(senderId, { warned: true, blocked: false });
+      messages.push({ role: 'user', content: userMessage });
+      messages.push({ role: 'assistant', content: MODERATION_WARNING_REPLY });
+      await saveConversation(senderId, messages);
+      return MODERATION_WARNING_REPLY;
+    }
+
+    // Already warned once and did it again — block for good.
+    await setModerationStatus(senderId, { warned: true, blocked: true });
+    messages.push({ role: 'user', content: userMessage });
+    messages.push({ role: 'assistant', content: MODERATION_FINAL_REPLY });
+    await saveConversation(senderId, messages);
+    return MODERATION_FINAL_REPLY;
+  }
 
   if (isEmojiOnlyMessage(userMessage)) {
     const emojiReply = getEmojiReply(lastAssistant);
