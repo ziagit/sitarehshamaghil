@@ -370,6 +370,27 @@ function isRateLimitError(err: unknown) {
   );
 }
 
+function logGeminiQuotaHit(senderId: string, err: unknown) {
+  const error = err as {
+    status?: number
+    statusCode?: number
+    code?: string
+    message?: string
+    data?: { error?: { code?: string; message?: string } }
+    response?: { status?: number }
+  };
+
+  console.error('[GeminiQuotaHit]', JSON.stringify({
+    event: 'gemini_quota_hit',
+    senderId,
+    model: CHAT_MODEL,
+    status: error?.status ?? error?.statusCode ?? error?.response?.status ?? null,
+    code: error?.code ?? error?.data?.error?.code ?? null,
+    message: error?.message ?? error?.data?.error?.message ?? 'Gemini quota or rate limit reached',
+    at: new Date().toISOString(),
+  }));
+}
+
 /**
  * Gets conversation history from Upstash Redis
  */
@@ -495,6 +516,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   const completion = await chat.sendMessage(userMessage).catch((err) => {
     if (isRateLimitError(err)) {
+      logGeminiQuotaHit(senderId, err);
       return null;
     }
     throw err;
