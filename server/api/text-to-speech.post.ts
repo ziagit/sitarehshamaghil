@@ -20,26 +20,47 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const baseUrl = (config.POLLINATIONS_BASE_URL || 'https://text.pollinations.ai/v1').replace(/\/$/, '')
-  const endpoint = `${baseUrl}/audio/speech`
+  if (!config.POLLINATIONS_API_KEY) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: 'POLLINATIONS_API_KEY is missing',
+      data: 'Set a Pollinations secret key from enter.pollinations.ai in your server environment before using text-to-speech.',
+    })
+  }
+
+  const baseUrl = (config.POLLINATIONS_BASE_URL || 'https://gen.pollinations.ai').replace(/\/$/, '')
+  const endpoint = `${baseUrl}/v1/audio/speech`
   const model = body?.model || (hasPersianText(text) ? 'qwen-tts' : 'eleven-multilingual-v2')
   const voice = body?.voice || 'alloy'
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'audio/mpeg',
-      ...(config.POLLINATIONS_API_KEY
-        ? { Authorization: `Bearer ${config.POLLINATIONS_API_KEY}` }
-        : {}),
-    },
-    body: JSON.stringify({
-      model,
-      voice,
-      input: text,
-    }),
+  const requestBody = JSON.stringify({
+    model,
+    voice,
+    input: text,
   })
+
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'audio/mpeg',
+    Authorization: `Bearer ${config.POLLINATIONS_API_KEY}`,
+  }
+
+  let response = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: requestBody,
+  })
+
+  if (response.status === 404) {
+    const fallbackEndpoint = `${baseUrl}/audio/${encodeURIComponent(text)}?voice=${encodeURIComponent(voice)}&model=${encodeURIComponent(model)}`
+    response = await fetch(fallbackEndpoint, {
+      method: 'GET',
+      headers: {
+        Accept: 'audio/mpeg',
+        Authorization: `Bearer ${config.POLLINATIONS_API_KEY}`,
+      },
+    })
+  }
 
   if (!response.ok) {
     const details = await response.text().catch(() => '')

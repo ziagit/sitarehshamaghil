@@ -10,8 +10,8 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@upstash/redis": "^1.37.0",
-    "groq-sdk": "^0.37.0",
     "nuxt": "^4.3.1",
     "unstorage": "^1.17.4",
     "vue": "^3.5.29",

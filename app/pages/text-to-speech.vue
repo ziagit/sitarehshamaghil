@@ -297,7 +297,12 @@ async function speak() {
     console.error(error)
     isSpeaking.value = false
     cleanupAudio()
-    statusMessage.value = 'Pollinations audio generation failed.'
+    const detail =
+      typeof error === 'object' && error && 'data' in error && typeof (error as { data?: unknown }).data === 'string'
+        ? (error as { data?: string }).data
+        : ''
+
+    statusMessage.value = detail || 'Pollinations audio generation failed.'
   }
 }
 
