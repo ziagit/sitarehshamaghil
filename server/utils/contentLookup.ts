@@ -1,3 +1,5 @@
+import { getRandomPoem } from './poemLibrary';
+
 type ChatMessage = {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -34,6 +36,21 @@ const PAGE_POSTS_CACHE_TTL = 10 * 60 * 1000;
 const WEB_SEARCH_TIMEOUT_MS = 8000;
 
 let cachedPagePosts: { at: number; posts: PagePost[] } | null = null;
+
+const POEM_FALLBACK_HINTS = [
+  'شعر بخوان',
+  'یک شعر',
+  'شعری',
+  'شعر بگو',
+  'شعر',
+  'poem',
+  'poetry',
+];
+
+function wantsLocalPoem(text: string) {
+  const normalized = normalize(text);
+  return POEM_FALLBACK_HINTS.some((hint) => normalized.includes(normalize(hint)));
+}
 
 function normalize(text: string) {
   return text
@@ -288,6 +305,13 @@ function followUpSearchMessage(kind: ContentKind) {
 export async function resolveContentReply(userMessage: string, conversation: ChatMessage[]): Promise<string | null> {
   const kind = detectContentKind(userMessage);
   if (!kind) return null;
+
+  if (kind === 'poem' && wantsLocalPoem(userMessage)) {
+    const poem = getRandomPoem();
+    if (poem) {
+      return poem.text;
+    }
+  }
 
   const lastUserMessage = [...conversation].reverse().find((message) => message.role === 'user')?.content;
   const isVeryShortFollowUp = compact(userMessage).split(' ').length <= 2;

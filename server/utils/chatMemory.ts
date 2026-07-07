@@ -89,6 +89,7 @@ type ModerationStatus = {
  * Moderation state per user, stored in Redis. Does not auto-expire:
  * once someone is blocked, they stay blocked until manually cleared.
  */
+
 export async function getModerationStatus(senderId: string): Promise<ModerationStatus> {
   const storage = useStorage('chat');
   const key = `moderation:${senderId}`;
@@ -105,6 +106,7 @@ export async function setModerationStatus(senderId: string, status: ModerationSt
 // Single source of truth for the model's persona and behavior.
 // Keep this short. Every extra rule you add makes an 8B model sound
 // more like it's filling out a template and less like a person.
+
 const SYSTEM_PROMPT = `
 You are ستاره, a young هزاره woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
 
