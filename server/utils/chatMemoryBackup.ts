@@ -5,18 +5,19 @@ import { resolveContentReply } from './contentLookup';
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '');
 
-// Use the flash model that is actually available on this key/account.
-const CHAT_MODEL = 'gemini-2.5-flash';
+// Use the lighter flash model to keep quota usage lower.
+const CHAT_MODEL = 'gemini-1.5-flash';
 
 // How many prior turns get sent to the model. Raised from 5 -> 12 so the
 // bot can remember earlier facts (family, location, past rejections)
 // in longer conversations instead of contradicting itself.
-const MAX_MODEL_MESSAGES = 12;
+const MAX_MODEL_MESSAGES = 8;
 
 // How many turns get persisted to Redis per user.
 const MAX_MESSAGES = 20;
 
-const MAX_CONTENT_CHARS = 360;
+const MAX_CONTENT_CHARS = 240;
+const GEMINI_RETRY_DELAY_MS = 900;
 
 // The exact, fixed reply used whenever someone directly asks whether
 // this is a human or a bot/AI. Kept as a hardcoded intercept (see
@@ -357,16 +358,22 @@ function isRateLimitError(err: unknown) {
     status?: number
     statusCode?: number
     code?: string
+    message?: string
+    errorDetails?: unknown[]
     data?: { error?: { code?: string } }
     response?: { status?: number }
   };
+
+  const message = `${error?.message || ''} ${JSON.stringify(error?.errorDetails || [])}`.toLowerCase();
 
   return (
     error?.status === 429 ||
     error?.statusCode === 429 ||
     error?.response?.status === 429 ||
     error?.code === 'rate_limit_exceeded' ||
-    error?.data?.error?.code === 'rate_limit_exceeded'
+    error?.data?.error?.code === 'rate_limit_exceeded' ||
+    message.includes('quota') ||
+    message.includes('rate limit')
   );
 }
 
@@ -376,6 +383,7 @@ function logGeminiQuotaHit(senderId: string, err: unknown) {
     statusCode?: number
     code?: string
     message?: string
+    errorDetails?: unknown[]
     data?: { error?: { code?: string; message?: string } }
     response?: { status?: number }
   };
@@ -387,8 +395,63 @@ function logGeminiQuotaHit(senderId: string, err: unknown) {
     status: error?.status ?? error?.statusCode ?? error?.response?.status ?? null,
     code: error?.code ?? error?.data?.error?.code ?? null,
     message: error?.message ?? error?.data?.error?.message ?? 'Gemini quota or rate limit reached',
+    details: error?.errorDetails ?? null,
     at: new Date().toISOString(),
   }));
+}
+
+function logGeminiGenerationFailure(senderId: string, err: unknown) {
+  const error = err as {
+    status?: number
+    statusCode?: number
+    code?: string
+    message?: string
+    errorDetails?: unknown[]
+  };
+
+  console.error('[GeminiGenerationFailed]', JSON.stringify({
+    event: 'gemini_generation_failed',
+    senderId,
+    model: CHAT_MODEL,
+    status: error?.status ?? error?.statusCode ?? null,
+    code: error?.code ?? null,
+    message: error?.message ?? 'Gemini generation failed',
+    details: error?.errorDetails ?? null,
+    at: new Date().toISOString(),
+  }));
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendGeminiMessageWithRetry(
+  chat: ReturnType<typeof createChatSession>,
+  senderId: string,
+  userMessage: string,
+) {
+  try {
+    return await chat.sendMessage(userMessage);
+  } catch (err) {
+    logGeminiGenerationFailure(senderId, err);
+    if (!isRateLimitError(err)) {
+      throw err;
+    }
+
+    logGeminiQuotaHit(senderId, err);
+    await wait(GEMINI_RETRY_DELAY_MS);
+
+    try {
+      return await chat.sendMessage(userMessage);
+    } catch (retryErr) {
+      logGeminiGenerationFailure(senderId, retryErr);
+      if (isRateLimitError(retryErr)) {
+        logGeminiQuotaHit(senderId, retryErr);
+        return null;
+      }
+      throw retryErr;
+    }
+  }
 }
 
 /**
@@ -514,13 +577,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   const chat = createChatSession(messages);
   messages.push({ role: 'user', content: userMessage });
 
-  const completion = await chat.sendMessage(userMessage).catch((err) => {
-    if (isRateLimitError(err)) {
-      logGeminiQuotaHit(senderId, err);
-      return null;
-    }
-    throw err;
-  });
+  const completion = await sendGeminiMessageWithRetry(chat, senderId, userMessage);
 
   if (!completion) {
     const fallback = pickVariant(getFallbackReply(allowLatin), lastAssistant) || getFallbackReply(allowLatin)[0];
