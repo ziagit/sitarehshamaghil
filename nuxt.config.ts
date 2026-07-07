@@ -8,7 +8,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
     FACEBOOK_PAGE_TOKEN: process.env.FACEBOOK_PAGE_TOKEN,
-    GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY,
+    GROQ_API_KEY: process.env.GROQ_API_KEY,
     POLLINATIONS_API_KEY: process.env.POLLINATIONS_API_KEY,
     POLLINATIONS_BASE_URL: process.env.POLLINATIONS_BASE_URL,
   },

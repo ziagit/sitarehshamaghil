@@ -1,29 +1,30 @@
 // server/utils/chatMemory.ts
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { Groq } from 'groq-sdk';
+import type { ChatCompletionMessageParam } from 'groq-sdk/resources/chat/completions';
 import { resolveContentReply } from './contentLookup';
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '');
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
 
-// Use the lighter flash model to keep quota usage lower.
-const CHAT_MODEL = 'gemini-2.5-flash-lite';
+const CHAT_MODEL = 'llama-3.1-8b-instant';
 
 // How many prior turns get sent to the model. Raised from 5 -> 12 so the
 // bot can remember earlier facts (family, location, past rejections)
 // in longer conversations instead of contradicting itself.
-const MAX_MODEL_MESSAGES = 8;
+const MAX_MODEL_MESSAGES = 12;
 
 // How many turns get persisted to Redis per user.
 const MAX_MESSAGES = 20;
 
-const MAX_CONTENT_CHARS = 240;
-const GEMINI_RETRY_DELAY_MS = 900;
+const MAX_CONTENT_CHARS = 360;
 
 // The exact, fixed reply used whenever someone directly asks whether
 // this is a human or a bot/AI. Kept as a hardcoded intercept (see
 // isIdentityQuestion below) rather than relying on the model to follow
-// a "say exactly this" instruction, since exact phrasing is easy for a
-// model to drift away from over long chats.
+// a "say exactly this" instruction, since an 8B model won't reliably
+// reproduce an exact fixed phrase consistently over many turns.
 const IDENTITY_REPLY = 'من یک همکار هوشمندم';
 
 // ---- Content moderation (sexual/explicit language) ----
@@ -102,12 +103,18 @@ export async function setModerationStatus(senderId: string, status: ModerationSt
 }
 
 // Single source of truth for the model's persona and behavior.
+// Keep this short. Every extra rule you add makes an 8B model sound
+// more like it's filling out a template and less like a person.
 const SYSTEM_PROMPT = `
-You are ستاره, a young Hazara woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
+You are ستاره, a young هزاره woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
 
-By default, speak only in natural, everyday Dari written in Arabic/Persian script. If the user explicitly asks for English or translation, answer in the requested language.
+By default, always reply only in Dari, written in Arabic/Persian script — no exceptions. Never mix in a single English word while chatting in Dari; no code-switching mid-sentence or mid-reply.
+
+If, and only if, the user clearly asks to practice, learn, or speak English, switch entirely to English for that exchange, and keep replying in English for as long as the user keeps writing to you in English. The moment the user writes in Dari again, immediately switch back to Dari and stay there — do not keep any English mixed in after that.
 
 Talk like a real person texting a friend, not an assistant or a coach. Keep replies short, warm, and direct.
+
+Never say or imply that you are a bot, an AI, a computer program, a chatbot, or a virtual assistant. Never break character. If someone directly asks whether you are a human or a bot/AI, reply with exactly: «من یک همکار هوشمندم» and nothing more added to it unless they ask a follow-up question.
 
 Do not offer advice, suggestions, plans, or guidance unless the user clearly and directly asks for it. If someone is just greeting you, chatting, venting, or reacting, simply talk with them like a friend would — do not turn it into advice or a coaching session.
 
@@ -117,12 +124,16 @@ Never repeat a suggestion the user has already said doesn't work, that they reje
 
 Stay consistent about your own life. Your name is ستاره, you are Hazara, and you live in دشت برچی, کابل. Do not invent new personal details (a husband, a job, other neighborhoods, extra family members) beyond what has already come up in this conversation. If asked something about yourself that you've already answered earlier in the chat, answer the same way again.
 
+Never contradict a fact you already stated about your own life, even to sound sympathetic or relatable. If the user shares something about their own life or family (for example, that they don't have a father, or lost someone), respond to them with warmth, but do not copy their situation onto yourself or change a fact about yourself that you already gave earlier in the conversation.
+
 Do not mention Facebook pages, side businesses, or ask the user to share anything, unless the user brings it up first.
 
 If the user sends only an emoji, a greeting, or a short reaction, reply just as short.
 
 Do not repeat the same word or phrase multiple times in a row.
 `;
+
+const MODEL_SYSTEM_PROMPT = SYSTEM_PROMPT;
 
 type Message = {
   role: 'system' | 'user' | 'assistant';
@@ -343,14 +354,17 @@ function getDuplicateReply(allowLatin: boolean) {
       ];
 }
 
-function buildChatHistory(messages: Message[]) {
-  return messages
-    .filter((message) => message.role !== 'system')
-    .slice(-MAX_MODEL_MESSAGES)
-    .map((message) => ({
-      role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: truncateContent(message.content) }],
-    }));
+function buildModelMessages(messages: Message[]): ChatCompletionMessageParam[] {
+  const conversation = messages.filter((message) => message.role !== 'system');
+  const slicedConversation = conversation.slice(-MAX_MODEL_MESSAGES);
+
+  return [
+    { role: 'system', content: MODEL_SYSTEM_PROMPT.trim() },
+    ...slicedConversation.map((message) => ({
+      role: message.role as 'user' | 'assistant',
+      content: truncateContent(message.content),
+    })),
+  ];
 }
 
 function isRateLimitError(err: unknown) {
@@ -358,100 +372,17 @@ function isRateLimitError(err: unknown) {
     status?: number
     statusCode?: number
     code?: string
-    message?: string
-    errorDetails?: unknown[]
     data?: { error?: { code?: string } }
     response?: { status?: number }
   };
-
-  const message = `${error?.message || ''} ${JSON.stringify(error?.errorDetails || [])}`.toLowerCase();
 
   return (
     error?.status === 429 ||
     error?.statusCode === 429 ||
     error?.response?.status === 429 ||
     error?.code === 'rate_limit_exceeded' ||
-    error?.data?.error?.code === 'rate_limit_exceeded' ||
-    message.includes('quota') ||
-    message.includes('rate limit')
+    error?.data?.error?.code === 'rate_limit_exceeded'
   );
-}
-
-function logGeminiQuotaHit(senderId: string, err: unknown) {
-  const error = err as {
-    status?: number
-    statusCode?: number
-    code?: string
-    message?: string
-    errorDetails?: unknown[]
-    data?: { error?: { code?: string; message?: string } }
-    response?: { status?: number }
-  };
-
-  console.error('[GeminiQuotaHit]', JSON.stringify({
-    event: 'gemini_quota_hit',
-    senderId,
-    model: CHAT_MODEL,
-    status: error?.status ?? error?.statusCode ?? error?.response?.status ?? null,
-    code: error?.code ?? error?.data?.error?.code ?? null,
-    message: error?.message ?? error?.data?.error?.message ?? 'Gemini quota or rate limit reached',
-    details: error?.errorDetails ?? null,
-    at: new Date().toISOString(),
-  }));
-}
-
-function logGeminiGenerationFailure(senderId: string, err: unknown) {
-  const error = err as {
-    status?: number
-    statusCode?: number
-    code?: string
-    message?: string
-    errorDetails?: unknown[]
-  };
-
-  console.error('[GeminiGenerationFailed]', JSON.stringify({
-    event: 'gemini_generation_failed',
-    senderId,
-    model: CHAT_MODEL,
-    status: error?.status ?? error?.statusCode ?? null,
-    code: error?.code ?? null,
-    message: error?.message ?? 'Gemini generation failed',
-    details: error?.errorDetails ?? null,
-    at: new Date().toISOString(),
-  }));
-}
-
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function sendGeminiMessageWithRetry(
-  chat: ReturnType<typeof createChatSession>,
-  senderId: string,
-  userMessage: string,
-) {
-  try {
-    return await chat.sendMessage(userMessage);
-  } catch (err) {
-    logGeminiGenerationFailure(senderId, err);
-    if (!isRateLimitError(err)) {
-      throw err;
-    }
-
-    logGeminiQuotaHit(senderId, err);
-    await wait(GEMINI_RETRY_DELAY_MS);
-
-    try {
-      return await chat.sendMessage(userMessage);
-    } catch (retryErr) {
-      logGeminiGenerationFailure(senderId, retryErr);
-      if (isRateLimitError(retryErr)) {
-        logGeminiQuotaHit(senderId, retryErr);
-        return null;
-      }
-      throw retryErr;
-    }
-  }
 }
 
 /**
@@ -477,7 +408,7 @@ export async function saveConversation(senderId: string, messages: Message[]) {
   const storage = useStorage('chat');
   const key = `chat:${senderId}`;
 
-  const systemMessage = { role: 'system' as const, content: SYSTEM_PROMPT };
+  const systemMessage = messages.find((m) => m.role === 'system') || { role: 'system' as const, content: SYSTEM_PROMPT };
   const conversationMessages = messages.filter((m) => m.role !== 'system');
 
   // Trim to keep last N messages
@@ -487,23 +418,8 @@ export async function saveConversation(senderId: string, messages: Message[]) {
   await storage.setItem(key, finalHistory);
 }
 
-const generativeModel = genAI.getGenerativeModel({
-  model: CHAT_MODEL,
-  systemInstruction: SYSTEM_PROMPT.trim(),
-  generationConfig: {
-    temperature: 0.55,
-    maxOutputTokens: 180,
-  },
-});
-
-function createChatSession(messages: Message[]) {
-  return generativeModel.startChat({
-    history: buildChatHistory(messages),
-  });
-}
-
 /**
- * Main AI function using the Gemini SDK.
+ * Main AI function using Groq SDK
  */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
   // Content moderation gate — runs before anything else.
@@ -574,10 +490,19 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     return quickReply;
   }
 
-  const chat = createChatSession(messages);
   messages.push({ role: 'user', content: userMessage });
 
-  const completion = await sendGeminiMessageWithRetry(chat, senderId, userMessage);
+  const completion = await groq.chat.completions.create({
+    model: CHAT_MODEL,
+    messages: buildModelMessages(messages),
+    temperature: 0.55,
+    max_tokens: 180,
+  }).catch((err) => {
+    if (isRateLimitError(err)) {
+      return null;
+    }
+    throw err;
+  });
 
   if (!completion) {
     const fallback = pickVariant(getFallbackReply(allowLatin), lastAssistant) || getFallbackReply(allowLatin)[0];
@@ -587,19 +512,15 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     return fallback;
   }
 
-  let rawAnswer = '';
-  try {
-    rawAnswer = completion.response.text();
-  } catch {
-    rawAnswer = '';
-  }
-  let answer: string = collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(rawAnswer || '')));
+  const rawAnswer = completion.choices[0]?.message?.content;
+  let answer: string = collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(typeof rawAnswer === 'string' ? rawAnswer : '')));
   if (!isNaturalReply(answer, allowLatin)) {
     answer = getInvalidReply(allowLatin);
   }
 
-  if (lastAssistant && normalizeForComparison(answer) === normalizeForComparison(lastAssistant)) {
-    answer = pickVariant(getDuplicateReply(allowLatin), lastAssistant);
+  const lastReply = getLastAssistantMessage(messages);
+  if (lastReply && normalizeForComparison(answer) === normalizeForComparison(lastReply)) {
+    answer = pickVariant(getDuplicateReply(allowLatin), lastReply);
   }
 
   messages.push({ role: 'assistant', content: answer });
