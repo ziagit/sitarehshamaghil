@@ -30,27 +30,12 @@ type SearchResult = {
   source: 'page' | 'web';
 };
 
-type ContentKind = 'song' | 'story' | 'poem';
+type ContentKind = 'song' | 'story' | 'biography' | 'poem';
 
 const PAGE_POSTS_CACHE_TTL = 10 * 60 * 1000;
 const WEB_SEARCH_TIMEOUT_MS = 8000;
 
 let cachedPagePosts: { at: number; posts: PagePost[] } | null = null;
-
-const POEM_FALLBACK_HINTS = [
-  'شعر بخوان',
-  'یک شعر',
-  'شعری',
-  'شعر بگو',
-  'شعر',
-  'poem',
-  'poetry',
-];
-
-function wantsLocalPoem(text: string) {
-  const normalized = normalize(text);
-  return POEM_FALLBACK_HINTS.some((hint) => normalized.includes(normalize(hint)));
-}
 
 function normalize(text: string) {
   return text
@@ -105,6 +90,10 @@ function detectContentKind(text: string): ContentKind | null {
     return 'story';
   }
 
+  if (/(زندگی‌نامه|زندگی نامه|بیوگرافی|biography|bio|زندگی|سرگذشت|شرح حال)/u.test(normalized)) {
+    return 'biography';
+  }
+
   if (/(شعر|شعری|poem|poetry|غزل|سروده|نظم)/u.test(normalized)) {
     return 'poem';
   }
@@ -128,7 +117,9 @@ function buildSearchQuery(text: string, kind: ContentKind) {
       ? ['آهنگ', 'موسیقی']
       : kind === 'story'
         ? ['قصه', 'داستان']
-        : ['شعر', 'poem'];
+        : kind === 'biography'
+          ? ['زندگی‌نامه', 'بیوگرافی']
+          : ['شعر', 'poem'];
 
   return filtered.length > 0 ? filtered.join(' ') : fallback.join(' ');
 }
@@ -247,7 +238,9 @@ async function searchWeb(query: string, kind: ContentKind) {
       ? `${query} song OR music`
       : kind === 'story'
         ? `${query} story OR storybook OR tale`
-        : `${query} poem OR poetry`;
+        : kind === 'biography'
+          ? `${query} biography OR life story OR profile OR biography page`
+          : `${query} poem OR poetry`;
 
   const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
   const controller = new AbortController();
@@ -287,7 +280,14 @@ async function searchWeb(query: string, kind: ContentKind) {
 }
 
 function formatResults(kind: ContentKind, results: SearchResult[], sourceLabel: string) {
-  const kindLabel = kind === 'song' ? 'آهنگ' : kind === 'story' ? 'قصه' : 'شعر';
+  const kindLabel =
+    kind === 'song'
+      ? 'آهنگ'
+      : kind === 'story'
+        ? 'قصه'
+        : kind === 'biography'
+          ? 'زندگی‌نامه'
+          : 'شعر';
 
   const lines = results.slice(0, 3).map((result, index) => {
     const snippet = result.snippet ? ` - ${result.snippet.slice(0, 110)}` : '';
@@ -298,7 +298,14 @@ function formatResults(kind: ContentKind, results: SearchResult[], sourceLabel: 
 }
 
 function followUpSearchMessage(kind: ContentKind) {
-  const kindLabel = kind === 'song' ? 'آهنگ' : kind === 'story' ? 'قصه' : 'شعر';
+  const kindLabel =
+    kind === 'song'
+      ? 'آهنگ'
+      : kind === 'story'
+        ? 'قصه'
+        : kind === 'biography'
+          ? 'زندگی‌نامه'
+          : 'شعر';
   return `قربانت، نام یا موضوع همی ${kindLabel} ره دقیق‌تر بگو تا بهتر پیدا کنم.`;
 }
 
@@ -306,11 +313,12 @@ export async function resolveContentReply(userMessage: string, conversation: Cha
   const kind = detectContentKind(userMessage);
   if (!kind) return null;
 
-  if (kind === 'poem' && wantsLocalPoem(userMessage)) {
+  if (kind === 'poem') {
     const poem = getRandomPoem();
     if (poem) {
       return poem.text;
     }
+    return null;
   }
 
   const lastUserMessage = [...conversation].reverse().find((message) => message.role === 'user')?.content;
