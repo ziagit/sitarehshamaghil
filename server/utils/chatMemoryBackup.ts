@@ -6,7 +6,7 @@ import { resolveContentReply } from './contentLookup';
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '');
 
 // Use the lighter flash model to keep quota usage lower.
-const CHAT_MODEL = 'gemini-1.5-flash';
+const CHAT_MODEL = 'gemini-2.5-flash-lite';
 
 // How many prior turns get sent to the model. Raised from 5 -> 12 so the
 // bot can remember earlier facts (family, location, past rejections)
