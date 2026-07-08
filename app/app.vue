@@ -14,11 +14,42 @@
           </div>
         </NuxtLink>
 
-        <nav class="hidden items-center gap-3 sm:flex">
-          <NuxtLink href="/" class="nav-link">Home</NuxtLink>
-          <NuxtLink href="/image-generator" class="nav-link">Image Generator</NuxtLink>
-          <NuxtLink href="/text-to-speech" class="nav-link">Text to Speech</NuxtLink>
-          <NuxtLink href="/privacy" class="nav-link">Privacy</NuxtLink>
+        <div class="flex items-center gap-2">
+          <nav class="hidden items-center gap-3 md:flex">
+            <NuxtLink href="/" class="nav-link">Home</NuxtLink>
+            <NuxtLink href="/gallery" class="nav-link">Gallery</NuxtLink>
+            <NuxtLink href="/image-generator" class="nav-link">Image Generator</NuxtLink>
+            <NuxtLink href="/text-to-speech" class="nav-link">Text to Speech</NuxtLink>
+            <NuxtLink href="/privacy" class="nav-link">Privacy</NuxtLink>
+          </nav>
+
+          <button
+            type="button"
+            class="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/5 p-2.5 text-slate-100 transition hover:bg-white/10 md:hidden"
+            :aria-expanded="isMenuOpen"
+            aria-label="Toggle navigation"
+            @click="isMenuOpen = !isMenuOpen"
+          >
+            <svg v-if="!isMenuOpen" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+            <svg v-else class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="isMenuOpen" class="border-t border-white/10 bg-slate-950/95 px-4 py-4 md:hidden">
+        <nav class="flex flex-col gap-2">
+          <NuxtLink href="/" class="mobile-nav-link" @click="isMenuOpen = false">Home</NuxtLink>
+          <NuxtLink href="/gallery" class="mobile-nav-link" @click="isMenuOpen = false">Gallery</NuxtLink>
+          <NuxtLink href="/image-generator" class="mobile-nav-link" @click="isMenuOpen = false">Image Generator</NuxtLink>
+          <NuxtLink href="/text-to-speech" class="mobile-nav-link" @click="isMenuOpen = false">Text to Speech</NuxtLink>
+          <NuxtLink href="/privacy" class="mobile-nav-link" @click="isMenuOpen = false">Privacy</NuxtLink>
         </nav>
       </div>
     </header>
@@ -42,7 +73,12 @@
 </template>
 
 <script setup lang="ts">
-// No script needed for static layout
+const isMenuOpen = ref(false)
+const route = useRoute()
+
+watch(() => route.fullPath, () => {
+  isMenuOpen.value = false
+})
 </script>
 
 <style scoped>
@@ -55,6 +91,7 @@
 }
 
 .nav-link,
+.mobile-nav-link,
 .footer-link {
   border-radius: 999px;
   padding: 0.55rem 0.9rem;
@@ -64,6 +101,7 @@
 }
 
 .nav-link:hover,
+.mobile-nav-link:hover,
 .footer-link:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #ffffff;
