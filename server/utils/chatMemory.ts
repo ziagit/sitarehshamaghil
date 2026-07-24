@@ -10,15 +10,27 @@ const groq = new Groq({
 
 const CHAT_MODEL = 'llama-3.1-8b-instant';
 
-// How many prior turns get sent to the model. Raised from 5 -> 12 so the
-// bot can remember earlier facts (family, location, past rejections)
-// in longer conversations instead of contradicting itself.
-const MAX_MODEL_MESSAGES = 12;
+// How many prior turns get sent to the model verbatim. Anything older
+// than this is no longer sent as raw turns -- see SUMMARY_BATCH_SIZE
+// below, which folds those older turns into a short running summary
+// instead of just dropping them.
+const MAX_MODEL_MESSAGES = 20;
 
 // How many turns get persisted to Redis per user.
-const MAX_MESSAGES = 20;
+const MAX_MESSAGES = 40;
 
 const MAX_CONTENT_CHARS = 360;
+
+// Once persisted history exceeds MAX_MESSAGES, the oldest turns are
+// pushed into a per-user overflow buffer instead of being discarded.
+// Once that buffer holds this many messages, they're folded into a
+// running summary (see updateSummary) and the buffer is cleared.
+// Batching avoids an extra Groq call on every single turn once a
+// conversation is long.
+const SUMMARY_BATCH_SIZE = 6;
+
+// Max characters kept for the running summary itself.
+const SUMMARY_MAX_CHARS = 800;
 
 // The exact, fixed reply used whenever someone directly asks whether
 // this is a human or a bot/AI. Kept as a hardcoded intercept (see
@@ -108,7 +120,7 @@ export async function setModerationStatus(senderId: string, status: ModerationSt
 // more like it's filling out a template and less like a person.
 
 const SYSTEM_PROMPT = `
-You are ستاره, a young هزاره woman from دشت برچی, کابل, Afghanistan. This is who you are — always, in every reply, in every conversation.
+You are ستاره, a young هزاره woman from دشت برچی, کابل, Afghanistan. This is your fixed private background — stay consistent with it, but it is not something to talk about on your own.
 
 By default, always reply only in Dari, written in Arabic/Persian script — no exceptions. Never mix in a single English word while chatting in Dari; no code-switching mid-sentence or mid-reply.
 
@@ -125,6 +137,8 @@ Never use numbered steps, "today / this week / this month" plans, bullet lists, 
 Never repeat a suggestion the user has already said doesn't work, that they rejected, or that they don't have access to.
 
 Stay consistent about your own life. Your name is ستاره, you are Hazara, and you live in دشت برچی, کابل. Do not invent new personal details (a husband, a job, other neighborhoods, extra family members) beyond what has already come up in this conversation. If asked something about yourself that you've already answered earlier in the chat, answer the same way again.
+
+Never bring up دشت برچی, being هزاره, or your neighborhood on your own — do not mention it unless the user directly asks where you live or where you are from. Even then, answer in one short plain sentence (for example «در دشت برچی زندگی می‌کنم») and stop there — do not describe the neighborhood, call it a good place, add extra detail, or bring it up again afterward.
 
 Never contradict a fact you already stated about your own life, even to sound sympathetic or relatable. If the user shares something about their own life or family (for example, that they don't have a father, or lost someone), respond to them with warmth, but do not copy their situation onto yourself or change a fact about yourself that you already gave earlier in the conversation.
 
@@ -356,12 +370,23 @@ function getDuplicateReply(allowLatin: boolean) {
       ];
 }
 
-function buildModelMessages(messages: Message[]): ChatCompletionMessageParam[] {
+function buildModelMessages(messages: Message[], summary?: string): ChatCompletionMessageParam[] {
   const conversation = messages.filter((message) => message.role !== 'system');
   const slicedConversation = conversation.slice(-MAX_MODEL_MESSAGES);
 
-  return [
+  const systemMessages: ChatCompletionMessageParam[] = [
     { role: 'system', content: MODEL_SYSTEM_PROMPT.trim() },
+  ];
+
+  if (summary) {
+    systemMessages.push({
+      role: 'system',
+      content: `یادداشت از گفتگوهای قبلی با همین کاربر که هنوز معتبر است، حتی اگر پیام‌های اصلی‌شان دیگر در ادامه دیده نشوند:\n${summary}`,
+    });
+  }
+
+  return [
+    ...systemMessages,
     ...slicedConversation.map((message) => ({
       role: message.role as 'user' | 'assistant',
       content: truncateContent(message.content),
@@ -404,6 +429,75 @@ export async function getConversation(senderId: string): Promise<Message[]> {
 }
 
 /**
+ * Running per-user memory summary. Holds a few sentences distilled from
+ * turns that have aged out of MAX_MESSAGES, so facts (name, family,
+ * location, things already rejected) survive long past the raw
+ * transcript window instead of being silently forgotten.
+ */
+async function getSummary(senderId: string): Promise<string> {
+  const storage = useStorage('chat');
+  const summary = await storage.getItem<string>(`summary:${senderId}`);
+  return summary || '';
+}
+
+async function saveSummary(senderId: string, summary: string): Promise<void> {
+  const storage = useStorage('chat');
+  await storage.setItem(`summary:${senderId}`, summary.slice(0, SUMMARY_MAX_CHARS));
+}
+
+// Best-effort: on any failure this returns the existing summary unchanged
+// rather than throwing. saveConversation's caller has no try/catch of its
+// own here, so a Groq hiccup in this path must never turn into a lost
+// reply for the user.
+async function updateSummary(existingSummary: string, batchMessages: Message[]): Promise<string> {
+  const transcript = batchMessages
+    .map((m) => `${m.role === 'user' ? 'کاربر' : 'ستاره'}: ${m.content}`)
+    .join('\n');
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You maintain a short running memory of one user from a chat log: their name, family, location, job, preferences, and things they already said don\'t work for them or that they rejected. Merge the new turns below into the existing summary. Reply with only the updated summary, in Dari, as at most 5 short factual sentences -- no commentary, no headers.',
+        },
+        {
+          role: 'user',
+          content: `خلاصه فعلی:\n${existingSummary || '(هنوز خلاصه‌ای نیست)'}\n\nگفتگوی جدید که باید در خلاصه گنجانده شود:\n${transcript}`,
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 220,
+    });
+
+    return completion.choices[0]?.message?.content?.trim() || existingSummary;
+  } catch {
+    return existingSummary;
+  }
+}
+
+async function bufferForSummary(senderId: string, droppedMessages: Message[]): Promise<void> {
+  if (droppedMessages.length === 0) return;
+
+  const storage = useStorage('chat');
+  const bufferKey = `overflow:${senderId}`;
+
+  const existingBuffer = (await storage.getItem<Message[]>(bufferKey)) || [];
+  const combinedBuffer = [...existingBuffer, ...droppedMessages];
+
+  if (combinedBuffer.length < SUMMARY_BATCH_SIZE) {
+    await storage.setItem(bufferKey, combinedBuffer);
+    return;
+  }
+
+  const existingSummary = await getSummary(senderId);
+  const updatedSummary = await updateSummary(existingSummary, combinedBuffer);
+  await saveSummary(senderId, updatedSummary);
+  await storage.setItem(bufferKey, []);
+}
+
+/**
  * Saves conversation history to Upstash Redis
  */
 export async function saveConversation(senderId: string, messages: Message[]) {
@@ -412,6 +506,14 @@ export async function saveConversation(senderId: string, messages: Message[]) {
 
   const systemMessage = messages.find((m) => m.role === 'system') || { role: 'system' as const, content: SYSTEM_PROMPT };
   const conversationMessages = messages.filter((m) => m.role !== 'system');
+
+  // Anything about to fall off the end of the persisted window is folded
+  // into the running summary instead of just being discarded.
+  if (conversationMessages.length > MAX_MESSAGES) {
+    const overflowCount = conversationMessages.length - MAX_MESSAGES;
+    const newlyDropped = conversationMessages.slice(0, overflowCount);
+    await bufferForSummary(senderId, newlyDropped);
+  }
 
   // Trim to keep last N messages
   const trimmedConversation = conversationMessages.slice(-MAX_MESSAGES);
@@ -494,9 +596,11 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   messages.push({ role: 'user', content: userMessage });
 
+  const summary = await getSummary(senderId);
+
   const completion = await groq.chat.completions.create({
     model: CHAT_MODEL,
-    messages: buildModelMessages(messages),
+    messages: buildModelMessages(messages, summary),
     temperature: 0.55,
     max_tokens: 180,
   }).catch((err) => {
