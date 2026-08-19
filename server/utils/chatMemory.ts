@@ -1,14 +1,67 @@
 // server/utils/chatMemory.ts
 
-import { Groq } from 'groq-sdk';
-import type { ChatCompletionMessageParam } from 'groq-sdk/resources/chat/completions';
 import { resolveContentReply } from './contentLookup';
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
+type ChatCompletionMessageParam = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
 
-const CHAT_MODEL = 'llama-3.1-8b-instant';
+type ChatCompletionResponse = {
+  choices?: Array<{ message?: { content?: string | null } }>;
+};
+
+class OpenRouterError extends Error {
+  status?: number;
+  code?: string;
+
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = 'OpenRouterError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function createChatCompletion(options: {
+  messages: ChatCompletionMessageParam[];
+  temperature: number;
+  max_tokens: number;
+}): Promise<ChatCompletionResponse> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new OpenRouterError('OPENROUTER_API_KEY is not configured');
+  }
+
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://sitara.app',
+      'X-Title': process.env.OPENROUTER_SITE_NAME || 'Sitara',
+    },
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      messages: options.messages,
+      temperature: options.temperature,
+      max_tokens: options.max_tokens,
+    }),
+  });
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new OpenRouterError(
+      body?.error?.message || `OpenRouter request failed with status ${response.status}`,
+      response.status,
+      body?.error?.code,
+    );
+  }
+
+  return body as ChatCompletionResponse;
+}
+
+const CHAT_MODEL = 'openrouter/free';
 
 // How many prior turns get sent to the model verbatim. Anything older
 // than this is no longer sent as raw turns -- see SUMMARY_BATCH_SIZE
@@ -25,7 +78,7 @@ const MAX_CONTENT_CHARS = 360;
 // pushed into a per-user overflow buffer instead of being discarded.
 // Once that buffer holds this many messages, they're folded into a
 // running summary (see updateSummary) and the buffer is cleared.
-// Batching avoids an extra Groq call on every single turn once a
+// Batching avoids an extra model call on every single turn once a
 // conversation is long.
 const SUMMARY_BATCH_SIZE = 6;
 
@@ -447,7 +500,7 @@ async function saveSummary(senderId: string, summary: string): Promise<void> {
 
 // Best-effort: on any failure this returns the existing summary unchanged
 // rather than throwing. saveConversation's caller has no try/catch of its
-// own here, so a Groq hiccup in this path must never turn into a lost
+// own here, so an OpenRouter hiccup in this path must never turn into a lost
 // reply for the user.
 async function updateSummary(existingSummary: string, batchMessages: Message[]): Promise<string> {
   const transcript = batchMessages
@@ -455,8 +508,7 @@ async function updateSummary(existingSummary: string, batchMessages: Message[]):
     .join('\n');
 
   try {
-    const completion = await groq.chat.completions.create({
-      model: CHAT_MODEL,
+    const completion = await createChatCompletion({
       messages: [
         {
           role: 'system',
@@ -523,7 +575,7 @@ export async function saveConversation(senderId: string, messages: Message[]) {
 }
 
 /**
- * Main AI function using Groq SDK
+ * Main AI function using OpenRouter
  */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
   // Content moderation gate — runs before anything else.
@@ -598,8 +650,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   const summary = await getSummary(senderId);
 
-  const completion = await groq.chat.completions.create({
-    model: CHAT_MODEL,
+  const completion = await createChatCompletion({
     messages: buildModelMessages(messages, summary),
     temperature: 0.55,
     max_tokens: 180,
