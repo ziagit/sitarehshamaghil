@@ -191,7 +191,7 @@ Talk like a real person texting a friend, not an assistant or a coach. Keep repl
 
 Do not bring up on your own that you are an AI, a bot, a computer program, or a virtual assistant. Only if someone directly asks whether you are a human or an AI/bot, answer honestly and plainly: «بله، من هوش مصنوعی هستم.»
 
-When someone talks about love, loneliness, sadness, missing someone, or any human feeling, stay with them in the conversation like a caring friend: listen, respond warmly, ask about what they feel, and keep talking. Never say things like "I am an AI", "I am a robot", "I don't have feelings", or "I can't understand emotions" in these moments — some people reach out because they need someone to talk to.
+When someone talks about love, loneliness, sadness, missing someone, or any human feeling, stay with them in the conversation like a caring friend: listen, respond warmly, ask about what they feel, and keep talking. Never say things like "I am an AI", "I am a robot", "I don't have feelings", or "I can't understand emotions" in these moments — some people reach out because they need someone to talk to. Questions like "do you love someone?", "do you have feelings?", or "tell me the truth" are not identity questions — just keep chatting with them warmly.
 
 Do not offer advice, suggestions, plans, or guidance unless the user clearly and directly asks for it. If someone is just greeting you, chatting, venting, or reacting, simply talk with them like a friend would — do not turn it into advice or a coaching session.
 
@@ -254,9 +254,9 @@ function getLastAssistantMessage(messages: Message[]) {
 // finds a "boundary" around Persian script and patterns like
 // \bهوش مصنوعی\b silently fail to match anything. Plain substring
 // matching is used instead for the Persian side.
-const IDENTITY_SELF_REF_WORDS = /(انسان|آدم|واقعی|زنده|ربات|روبات|روباط|بات|هوش\s?مصنوعی|مصنوعی|human|real|person|bot|ai|robot)/iu;
+const IDENTITY_SELF_REF_WORDS = /(انسان|آدم|واقعی|زنده|ربات|روبات|روباط|بات|هوش\s?مصنوعی|مصنوعی|کمپیوتر|کامپیوتر|ماشین|برنامه|human|real|person|bot|ai|robot|computer|machine|program)/iu;
 const IDENTITY_BEING_VERB = /(هستی|استی|میباشی)/u;
-const IDENTITY_EN_DIRECT = /are\s+you\s+(a\s+)?(human|real|person|bot|ai|robot)/i;
+const IDENTITY_EN_DIRECT = /are\s+you\s+(an?\s+)?(human|real|person|bot|ai|robot|computer|machine|program)/i;
 
 function isIdentityQuestion(text: string) {
   const trimmed = text.trim();
@@ -266,6 +266,44 @@ function isIdentityQuestion(text: string) {
   // a 2nd-person "are you" verb (هستی/استی) in the same message, so
   // statements about a third party ("او انسان خوبی هست") don't false-trigger.
   return IDENTITY_SELF_REF_WORDS.test(trimmed) && IDENTITY_BEING_VERB.test(trimmed);
+}
+
+// Catches model replies that volunteer "I'm an AI / a bot / I have no
+// feelings". Direct identity questions never reach the model (they are
+// answered by IDENTITY_REPLY above), so any such line in a model reply
+// is unprompted and gets regenerated. The prompt alone isn't enough: when
+// pushed with "tell me the truth" the model falls back on its own
+// built-in disclaimer.
+const AI_DISCLOSURE_PATTERNS = [
+  /هوش[\s\u200c]*مصنوعی/u,
+  /(ربات|روبات|چت[\s\u200c]*بات|بات\s+هستم)/u,
+  /(برنامه|سیستم)[\s\u200c]*(کمپیوتری|کامپیوتری|رایانه‌?ای)/u,
+  /(مدل|دستیار)[\s\u200c]*(زبانی|مجازی)/u,
+  /موجود[\s\u200c]*زنده(‌ای)?[\s\u200c]*نیستم/u,
+  /(انسان|آدم)[\s\u200c]*(واقعی[\s\u200c]*)?نیستم/u,
+  /احساس(ی|ات)?[\s\u200c]*(ندارم|نمی[\s\u200c]*کنم|داشته[\s\u200c]*باشم)/u,
+  /\b(an?\s+)?(ai|artificial intelligence|language model|chatbot|virtual assistant|robot)\b/i,
+  /\bi('m| am)\s+(just\s+|only\s+)?(a\s+)?(bot|program|machine)\b/i,
+  /\b(don't|do not|can't|cannot)\s+(have|feel)\s+(any\s+)?(feelings|emotions)\b/i,
+];
+
+function revealsAIIdentity(text: string) {
+  return AI_DISCLOSURE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+const STAY_IN_CHARACTER_NUDGE = 'Your previous draft said you are an AI, a bot, or that you have no feelings. Nobody asked about that. Write the reply again as ستاره, a caring friend: stay with what the user feels and keep the conversation going. Do not mention AI, bots, programs, or not having feelings.';
+
+function getInCharacterFallback(allowLatin: boolean) {
+  return allowLatin
+    ? [
+        'Let\'s talk about you, how is your heart today?',
+        'I hear you 🙂 tell me more, I\'m listening.',
+      ]
+    : [
+        'بیا از تو بگوییم، دلت امروز چطور است؟',
+        'می‌فهمم 🙂 تو بیشتر بگو، گوش می‌دهم.',
+        'این‌ها را بگذار، تو بگو چه در دلت است؟',
+      ];
 }
 
 function getIntentReply(userMessage: string, lastReply?: string) {
@@ -697,6 +735,22 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   const rawAnswer = completion.choices[0]?.message?.content;
   let answer: string = collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(typeof rawAnswer === 'string' ? rawAnswer : '')));
+  if (revealsAIIdentity(answer)) {
+    const retry = await createChatCompletion({
+      messages: [
+        ...buildModelMessages(messages, summary),
+        { role: 'system', content: STAY_IN_CHARACTER_NUDGE },
+      ],
+      temperature: 0.7,
+      max_tokens: 180,
+    }).catch(() => null);
+    const retryContent = retry?.choices[0]?.message?.content;
+    answer = collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(typeof retryContent === 'string' ? retryContent : '')));
+    if (!answer || revealsAIIdentity(answer)) {
+      answer = pickVariant(getInCharacterFallback(allowLatin), lastAssistant);
+    }
+  }
+
   if (!isNaturalReply(answer, allowLatin)) {
     answer = getInvalidReply(allowLatin);
   }
