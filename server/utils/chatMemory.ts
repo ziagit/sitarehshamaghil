@@ -1,6 +1,7 @@
 // server/utils/chatMemory.ts
 
 import { resolveContentReply } from './contentLookup';
+import { isMusicRequest, isPhotoRequest, pickDrivePhoto } from './drivePhotos';
 
 type ChatCompletionMessageParam = {
   role: 'system' | 'user' | 'assistant';
@@ -703,6 +704,52 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   await saveConversation(senderId, messages);
 
   return answer;
+}
+
+const PHOTO_CAPTIONS = [
+  'بفرما 🌸',
+  'اینم عکس 😊',
+  'این یکی را ببین 🌷',
+  'بفرمایید ❤',
+];
+
+const MUSIC_PHOTO_CAPTIONS = [
+  'آهنگ ندارم، ولی این عکس را ببین 🌸',
+  'به جای آهنگ، این عکس را برایت می‌فرستم 😊',
+  'آهنگ را بعداً، فعلاً این عکس 🌷',
+];
+
+/**
+ * Handles "send me a picture" and song/music requests with a random
+ * photo from Google Drive. Returns null when the message is neither (or
+ * the user is moderation-blocked / used explicit language, or no photo
+ * is available), so the caller falls through to getAIResponse as usual.
+ */
+export async function getPhotoReply(
+  senderId: string,
+  userMessage: string,
+): Promise<{ caption: string; imageUrl: string } | null> {
+  if (containsInappropriateLanguage(userMessage)) return null;
+
+  const wantsPhoto = isPhotoRequest(userMessage);
+  if (!wantsPhoto && !isMusicRequest(userMessage)) return null;
+
+  const moderationStatus = await getModerationStatus(senderId);
+  if (moderationStatus.blocked) return null;
+
+  const imageUrl = await pickDrivePhoto(senderId);
+  if (!imageUrl) return null;
+
+  const messages = await getConversation(senderId);
+  const caption = pickVariant(
+    wantsPhoto ? PHOTO_CAPTIONS : MUSIC_PHOTO_CAPTIONS,
+    getLastAssistantMessage(messages),
+  );
+  messages.push({ role: 'user', content: userMessage });
+  messages.push({ role: 'assistant', content: caption });
+  await saveConversation(senderId, messages);
+
+  return { caption, imageUrl };
 }
 
 /**

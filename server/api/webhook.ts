@@ -1,7 +1,7 @@
 // server/api/webhook.ts
-import { sendMessengerReply, sendTypingAction } from "../utils/messenger"
+import { sendMessengerImage, sendMessengerReply, sendTypingAction } from "../utils/messenger"
 import { extractCommentEvent, sendFacebookCommentReply } from "../utils/facebookComments"
-import { getAIResponse, getErrorStatus, isCannedReply, setErrorStatus } from "../utils/chatMemory"
+import { getAIResponse, getErrorStatus, getPhotoReply, isCannedReply, setErrorStatus } from "../utils/chatMemory"
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -48,8 +48,20 @@ export default defineEventHandler(async (event) => {
         // Interaction
         await sendTypingAction(sender)
 
+        // "Send me a picture" -> photo from Google Drive
+        const photoReply = await getPhotoReply(sender, messageText)
+        if (photoReply) {
+          await sendMessengerReply(sender, photoReply.caption)
+          await sendMessengerImage(sender, photoReply.imageUrl)
+          await setErrorStatus(sender, false)
+          return { ok: true }
+        }
+
         // AI Logic (Sitar Personality)
         const replyText = await getAIResponse(sender, messageText)
+
+        // '' means the user is moderation-blocked: send nothing at all
+        if (!replyText) return { ok: true }
 
         // Send to Messenger
         await sendMessengerReply(sender, replyText)
