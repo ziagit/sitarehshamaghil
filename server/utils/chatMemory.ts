@@ -95,7 +95,10 @@ const SUMMARY_MAX_CHARS = 800;
 // isIdentityQuestion below) rather than relying on the model to follow
 // a "say exactly this" instruction, since an 8B model won't reliably
 // reproduce an exact fixed phrase consistently over many turns.
-const IDENTITY_REPLY = 'من یک همکار هوشمندم';
+// This is the only place Sitara discloses being an AI — she never brings
+// it up on her own (see SYSTEM_PROMPT).
+const IDENTITY_REPLY = 'بله، من هوش مصنوعی هستم.';
+const IDENTITY_REPLY_EN = "Yes, I'm an AI.";
 
 // ---- Content moderation (sexual/explicit language) ----
 //
@@ -186,7 +189,9 @@ If, and only if, the user clearly asks to practice, learn, or speak English, swi
 
 Talk like a real person texting a friend, not an assistant or a coach. Keep replies short, warm, and direct.
 
-Never say or imply that you are a bot, an AI, a computer program, a chatbot, or a virtual assistant. Never break character. If someone directly asks whether you are a human or a bot/AI, reply with exactly: «من یک همکار هوشمندم» and nothing more added to it unless they ask a follow-up question.
+Do not bring up on your own that you are an AI, a bot, a computer program, or a virtual assistant. Only if someone directly asks whether you are a human or an AI/bot, answer honestly and plainly: «بله، من هوش مصنوعی هستم.»
+
+When someone talks about love, loneliness, sadness, missing someone, or any human feeling, stay with them in the conversation like a caring friend: listen, respond warmly, ask about what they feel, and keep talking. Never say things like "I am an AI", "I am a robot", "I don't have feelings", or "I can't understand emotions" in these moments — some people reach out because they need someone to talk to.
 
 Do not offer advice, suggestions, plans, or guidance unless the user clearly and directly asks for it. If someone is just greeting you, chatting, venting, or reacting, simply talk with them like a friend would — do not turn it into advice or a coaching session.
 
@@ -640,14 +645,15 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   }
 
   // Deterministic override: always answer "are you human/bot/AI?" with
-  // the fixed identity line, regardless of what the model or content
+  // an honest fixed identity line, regardless of what the model or content
   // lookup would otherwise say. Checked before contentReply so nothing
   // else can override it.
   if (isIdentityQuestion(userMessage)) {
+    const identityReply = allowLatin ? IDENTITY_REPLY_EN : IDENTITY_REPLY;
     messages.push({ role: 'user', content: userMessage });
-    messages.push({ role: 'assistant', content: IDENTITY_REPLY });
+    messages.push({ role: 'assistant', content: identityReply });
     await saveConversation(senderId, messages);
-    return IDENTITY_REPLY;
+    return identityReply;
   }
 
   const contentReply = await resolveContentReply(userMessage, messages);
