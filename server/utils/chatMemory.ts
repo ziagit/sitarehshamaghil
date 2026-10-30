@@ -11,13 +11,13 @@ type ChatCompletionResponse = {
   choices?: Array<{ message?: { content?: string | null } }>;
 };
 
-class OpenRouterError extends Error {
+class AIGatewayError extends Error {
   status?: number;
   code?: string;
 
   constructor(message: string, status?: number, code?: string) {
     super(message);
-    this.name = 'OpenRouterError';
+    this.name = 'AIGatewayError';
     this.status = status;
     this.code = code;
   }
@@ -28,21 +28,19 @@ async function createChatCompletion(options: {
   temperature: number;
   max_tokens: number;
 }): Promise<ChatCompletionResponse> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.AI_GATEWAY_API_KEY;
   if (!apiKey) {
-    throw new OpenRouterError('OPENROUTER_API_KEY is not configured');
+    throw new AIGatewayError('AI_GATEWAY_API_KEY is not configured');
   }
 
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const response = await fetch(process.env.AI_GATEWAY_URL || DEFAULT_GATEWAY_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://sitara.app',
-      'X-Title': process.env.OPENROUTER_SITE_NAME || 'Sitara',
     },
     body: JSON.stringify({
-      model: CHAT_MODEL,
+      model: process.env.AI_GATEWAY_MODEL || DEFAULT_CHAT_MODEL,
       messages: options.messages,
       temperature: options.temperature,
       max_tokens: options.max_tokens,
@@ -51,8 +49,8 @@ async function createChatCompletion(options: {
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new OpenRouterError(
-      body?.error?.message || `OpenRouter request failed with status ${response.status}`,
+    throw new AIGatewayError(
+      body?.error?.message || `AI gateway request failed with status ${response.status}`,
       response.status,
       body?.error?.code,
     );
@@ -61,7 +59,13 @@ async function createChatCompletion(options: {
   return body as ChatCompletionResponse;
 }
 
-const CHAT_MODEL = 'openrouter/free';
+// Self-hosted OpenAI-compatible gateway (free-ai-gateway). With model
+// "auto" it picks a provider (Gemini first) and fails over to the next
+// one on errors/rate limits. A specific provider can be pinned via
+// AI_GATEWAY_MODEL (gemini, groq, cohere, ...). Avoid "zai" -- it's a
+// reasoning model that burns max_tokens and returns empty content.
+const DEFAULT_GATEWAY_URL = 'https://free-ai-gateway-gray.vercel.app/v1/chat/completions';
+const DEFAULT_CHAT_MODEL = 'auto';
 
 // How many prior turns get sent to the model verbatim. Anything older
 // than this is no longer sent as raw turns -- see SUMMARY_BATCH_SIZE
@@ -500,7 +504,7 @@ async function saveSummary(senderId: string, summary: string): Promise<void> {
 
 // Best-effort: on any failure this returns the existing summary unchanged
 // rather than throwing. saveConversation's caller has no try/catch of its
-// own here, so an OpenRouter hiccup in this path must never turn into a lost
+// own here, so an AI gateway hiccup in this path must never turn into a lost
 // reply for the user.
 async function updateSummary(existingSummary: string, batchMessages: Message[]): Promise<string> {
   const transcript = batchMessages
@@ -575,7 +579,7 @@ export async function saveConversation(senderId: string, messages: Message[]) {
 }
 
 /**
- * Main AI function using OpenRouter
+ * Main AI function using the AI gateway
  */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
   // Content moderation gate — runs before anything else.
