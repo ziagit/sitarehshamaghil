@@ -427,6 +427,21 @@ function getDuplicateReply(allowLatin: boolean) {
       ];
 }
 
+// True when getAIResponse fell back to a canned "busy / didn't understand /
+// ask again" line instead of a real model answer. Fine in a private chat,
+// but looks bad posted publicly, so comment replies skip these.
+const CANNED_REPLIES = new Set(
+  [true, false].flatMap((allowLatin) => [
+    ...getFallbackReply(allowLatin),
+    getInvalidReply(allowLatin),
+    ...getDuplicateReply(allowLatin),
+  ]),
+);
+
+export function isCannedReply(text: string) {
+  return CANNED_REPLIES.has(text);
+}
+
 function buildModelMessages(messages: Message[], summary?: string): ChatCompletionMessageParam[] {
   const conversation = messages.filter((message) => message.role !== 'system');
   const slicedConversation = conversation.slice(-MAX_MODEL_MESSAGES);

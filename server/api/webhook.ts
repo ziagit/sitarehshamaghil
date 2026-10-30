@@ -1,7 +1,7 @@
 // server/api/webhook.ts
 import { sendMessengerReply, sendTypingAction } from "../utils/messenger"
 import { extractCommentEvent, sendFacebookCommentReply } from "../utils/facebookComments"
-import { getAIResponse, getErrorStatus, setErrorStatus } from "../utils/chatMemory"
+import { getAIResponse, getErrorStatus, isCannedReply, setErrorStatus } from "../utils/chatMemory"
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -69,6 +69,11 @@ export default defineEventHandler(async (event) => {
 
         const senderKey = `comment:${commentEvent.authorId || commentEvent.commentId}`
         const replyText = await getAIResponse(senderKey, commentEvent.message)
+
+        // '' means the user is moderation-blocked; canned fallbacks
+        // ("busy, ask again") shouldn't be posted publicly under a post.
+        if (!replyText || isCannedReply(replyText)) return { ok: true }
+
         await sendFacebookCommentReply({
           commentId: commentEvent.commentId,
           message: replyText,

@@ -52,6 +52,7 @@ export function extractCommentEvent(body: CommentWebhookBody): ExtractedCommentE
       const isCommentChange =
         change?.field === 'feed' &&
         value?.item === 'comment' &&
+        value?.verb === 'add' &&
         Boolean(value?.comment_id);
 
       if (!isCommentChange) continue;
