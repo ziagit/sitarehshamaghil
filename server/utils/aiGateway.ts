@@ -21,18 +21,18 @@ export class AIGatewayError extends Error {
   }
 }
 
-// Self-hosted OpenAI-compatible gateway (free-ai-gateway). Each provider
-// writes Dari differently, so with "auto" Sitara's voice changed from one
-// reply to the next. The model is pinned to "gemini" (the most natural
-// Dari of the providers; groq and cohere drift into Iranian Persian) and
-// "auto" is only used as a fallback when the pinned one fails or is rate
-// limited. Override with AI_GATEWAY_MODEL. Avoid "zai" -- it's a reasoning
-// model that burns max_tokens and returns empty content.
+// Self-hosted OpenAI-compatible gateway (free-ai-gateway). With model
+// "auto" it picks a provider (Gemini first) and fails over to the next
+// one on errors/rate limits -- even a pinned provider ("gemini") fails
+// over the same way, so pinning doesn't avoid the free-plan limit. When
+// Gemini is limited, replies come from groq's gpt-oss, which writes
+// Iranian Persian rather than Kabuli Dari. A specific provider can be
+// pinned via AI_GATEWAY_MODEL (gemini, groq, cohere, ...). Avoid "zai" --
+// it's a reasoning model that burns max_tokens and returns empty content.
 const DEFAULT_GATEWAY_URL = 'https://free-ai-gateway-gray.vercel.app/v1/chat/completions';
-const DEFAULT_CHAT_MODEL = 'gemini';
-const FALLBACK_CHAT_MODEL = 'auto';
+const DEFAULT_CHAT_MODEL = 'auto';
 
-async function requestCompletion(model: string, options: {
+export async function createChatCompletion(options: {
   messages: ChatCompletionMessageParam[];
   temperature: number;
   max_tokens: number;
@@ -49,7 +49,7 @@ async function requestCompletion(model: string, options: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model,
+      model: process.env.AI_GATEWAY_MODEL || DEFAULT_CHAT_MODEL,
       messages: options.messages,
       temperature: options.temperature,
       max_tokens: options.max_tokens,
@@ -66,20 +66,4 @@ async function requestCompletion(model: string, options: {
   }
 
   return body as ChatCompletionResponse;
-}
-
-export async function createChatCompletion(options: {
-  messages: ChatCompletionMessageParam[];
-  temperature: number;
-  max_tokens: number;
-}): Promise<ChatCompletionResponse> {
-  const model = process.env.AI_GATEWAY_MODEL || DEFAULT_CHAT_MODEL;
-
-  try {
-    return await requestCompletion(model, options);
-  } catch (err) {
-    if (model === FALLBACK_CHAT_MODEL) throw err;
-    console.error(`AI gateway model "${model}" failed, falling back to "${FALLBACK_CHAT_MODEL}":`, (err as Error)?.message);
-    return requestCompletion(FALLBACK_CHAT_MODEL, options);
-  }
 }

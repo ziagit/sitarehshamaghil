@@ -42,7 +42,7 @@ async function classify(userMessage: string, lastAssistant?: string): Promise<In
       ],
       temperature: 0,
       // The answer itself is one word, but when gemini is rate limited the
-      // gateway quietly switches to groq's gpt-oss, a reasoning model that
+      // gateway switches to groq's gpt-oss, a reasoning model that
       // spends ~100 tokens thinking first and returns empty content if it
       // runs out.
       max_tokens: 300,
