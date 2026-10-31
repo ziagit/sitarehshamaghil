@@ -1,3 +1,4 @@
+import { detectIntent } from './intent';
 import { getRandomPoem } from './poemLibrary';
 
 type ChatMessage = {
@@ -176,8 +177,19 @@ function followUpSearchMessage(kind: ContentKind) {
   return `قربانت، نام یا موضوع همی ${kindLabel} ره دقیق‌تر بگو تا بهتر پیدا کنم.`;
 }
 
+const CONTENT_KINDS: ContentKind[] = ['story', 'biography', 'poem'];
+
 export async function resolveContentReply(userMessage: string, conversation: ChatMessage[]): Promise<string | null> {
-  const kind = detectContentKind(userMessage);
+  // The keywords are only a filter: words like زندگی (life) and قصه
+  // (also "worry") come up in ordinary chat, so the model confirms the
+  // message really asks for a poem/story/biography. If the model can't
+  // be reached, this stays out of the way: links sent to someone who
+  // said "my life is hard" are worse than a normal chat reply.
+  if (!detectContentKind(userMessage)) return null;
+
+  const lastAssistant = [...conversation].reverse().find((message) => message.role === 'assistant')?.content;
+  const intent = await detectIntent(userMessage, lastAssistant);
+  const kind = CONTENT_KINDS.find((contentKind) => contentKind === intent);
   if (!kind) return null;
 
   if (kind === 'poem') {

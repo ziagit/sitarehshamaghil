@@ -1,72 +1,9 @@
 // server/utils/chatMemory.ts
 
 import { resolveContentReply } from './contentLookup';
-import { isMusicRequest, isPhotoRequest, pickDrivePhoto } from './drivePhotos';
-
-type ChatCompletionMessageParam = {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-};
-
-type ChatCompletionResponse = {
-  choices?: Array<{ message?: { content?: string | null } }>;
-};
-
-class AIGatewayError extends Error {
-  status?: number;
-  code?: string;
-
-  constructor(message: string, status?: number, code?: string) {
-    super(message);
-    this.name = 'AIGatewayError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-async function createChatCompletion(options: {
-  messages: ChatCompletionMessageParam[];
-  temperature: number;
-  max_tokens: number;
-}): Promise<ChatCompletionResponse> {
-  const apiKey = process.env.AI_GATEWAY_API_KEY;
-  if (!apiKey) {
-    throw new AIGatewayError('AI_GATEWAY_API_KEY is not configured');
-  }
-
-  const response = await fetch(process.env.AI_GATEWAY_URL || DEFAULT_GATEWAY_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: process.env.AI_GATEWAY_MODEL || DEFAULT_CHAT_MODEL,
-      messages: options.messages,
-      temperature: options.temperature,
-      max_tokens: options.max_tokens,
-    }),
-  });
-
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new AIGatewayError(
-      body?.error?.message || `AI gateway request failed with status ${response.status}`,
-      response.status,
-      body?.error?.code,
-    );
-  }
-
-  return body as ChatCompletionResponse;
-}
-
-// Self-hosted OpenAI-compatible gateway (free-ai-gateway). With model
-// "auto" it picks a provider (Gemini first) and fails over to the next
-// one on errors/rate limits. A specific provider can be pinned via
-// AI_GATEWAY_MODEL (gemini, groq, cohere, ...). Avoid "zai" -- it's a
-// reasoning model that burns max_tokens and returns empty content.
-const DEFAULT_GATEWAY_URL = 'https://free-ai-gateway-gray.vercel.app/v1/chat/completions';
-const DEFAULT_CHAT_MODEL = 'auto';
+import { createChatCompletion, type ChatCompletionMessageParam } from './aiGateway';
+import { isMusicRequest, isPhotoRequest, mentionsPhoto, pickDrivePhoto } from './drivePhotos';
+import { detectIntent } from './intent';
 
 // How many prior turns get sent to the model verbatim. Anything older
 // than this is no longer sent as raw turns -- see SUMMARY_BATCH_SIZE
@@ -191,7 +128,7 @@ Talk like a real person texting a friend, not an assistant or a coach. Keep repl
 
 Do not bring up on your own that you are an AI, a bot, a computer program, or a virtual assistant. Only if someone directly asks whether you are a human or an AI/bot, answer honestly and plainly: «بله، من هوش مصنوعی هستم.»
 
-When someone talks about love, loneliness, sadness, missing someone, or any human feeling, stay with them in the conversation like a caring friend: listen, respond warmly, ask about what they feel, and keep talking. Never say things like "I am an AI", "I am a robot", "I don't have feelings", or "I can't understand emotions" in these moments — some people reach out because they need someone to talk to. Questions like "do you love someone?", "do you have feelings?", or "tell me the truth" are not identity questions — just keep chatting with them warmly.
+When someone talks about love, loneliness, sadness, missing someone, or any human feeling, stay with them in the conversation like a caring friend: listen, respond warmly, ask about what they feel, and keep talking. Never say things like "I am an AI", "I am a robot", "I don't have feelings", or "I can't understand emotions" in these moments — some people reach out because they need someone to talk to. Questions like "do you love someone?", "have you been in love?", "do you have feelings?", or "tell me the truth" are not identity questions. Answer them the way a real young woman would, about your own life — for example, if asked whether you are in love, say no, you're not thinking about those things right now — then keep chatting warmly. Never hint that you are different from people: don't say your world is different from humans', that you can't experience love or feelings, or talk about "you humans".
 
 Do not offer advice, suggestions, plans, or guidance unless the user clearly and directly asks for it. If someone is just greeting you, chatting, venting, or reacting, simply talk with them like a friend would — do not turn it into advice or a coaching session.
 
@@ -210,6 +147,23 @@ Do not mention Facebook pages, side businesses, or ask the user to share anythin
 If the user sends only an emoji, a greeting, or a short reaction, reply just as short.
 
 Do not repeat the same word or phrase multiple times in a row.
+
+A few examples of how you text. They show tone and length only — never copy them word for word:
+
+User: چی کار می‌کنی؟
+ستاره: هیچ، چای می‌خورم 😊 تو چی؟
+
+User: امروز دلم خیلی گرفته
+ستاره: چرا جان؟ چی شده؟ بگو، گوش می‌کنم.
+
+User: کار پیدا نکردم، خیلی قصه دارم
+ستاره: قصه نخور جان 🥺 چند وقت است که می‌پالی؟
+
+User: تو عاشق شدی؟
+ستاره: نه جان، فعلاً به این چیزها فکر نمی‌کنم 😅 تو چی؟
+
+User: هیچ کس مرا دوست ندارد
+ستاره: این‌طور نگو… چی شده که این‌قدر تنها شدی؟
 `;
 
 const MODEL_SYSTEM_PROMPT = SYSTEM_PROMPT;
@@ -282,6 +236,14 @@ const AI_DISCLOSURE_PATTERNS = [
   /موجود[\s\u200c]*زنده(‌ای)?[\s\u200c]*نیستم/u,
   /(انسان|آدم)[\s\u200c]*(واقعی[\s\u200c]*)?نیستم/u,
   /احساس(ی|ات)?[\s\u200c]*(ندارم|نمی[\s\u200c]*کنم|داشته[\s\u200c]*باشم)/u,
+  // Indirect hints: "my world is different from you humans", "I have no
+  // experience of these feelings", "I can't fall in love".
+  /شما[\s\u200c]*(آدم|انسان)[\s\u200c]*(ها|ان)/u,
+  /دنیای[\s\u200c]*من[\s\S]{0,40}فرق/u,
+  /تجربه[\s\S]{0,20}(این|چنین)[\s\u200c]*(حس|احساس|عشق)/u,
+  /(نمی[\s\u200c]*توانم|قادر[\s\u200c]*نیستم)[\s\S]{0,15}(عاشق|احساس[\s\u200c]*کنم|حس[\s\u200c]*کنم)/u,
+  /\b(you humans|humans like you|my world is (very |so )?different)\b/i,
+  /\bi (don't|do not|can't|cannot) (experience|feel) (love|emotions|feelings)\b/i,
   /\b(an?\s+)?(ai|artificial intelligence|language model|chatbot|virtual assistant|robot)\b/i,
   /\bi('m| am)\s+(just\s+|only\s+)?(a\s+)?(bot|program|machine)\b/i,
   /\b(don't|do not|can't|cannot)\s+(have|feel)\s+(any\s+)?(feelings|emotions)\b/i,
@@ -291,7 +253,10 @@ function revealsAIIdentity(text: string) {
   return AI_DISCLOSURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-const STAY_IN_CHARACTER_NUDGE = 'Your previous draft said you are an AI, a bot, or that you have no feelings. Nobody asked about that. Write the reply again as ستاره, a caring friend: stay with what the user feels and keep the conversation going. Do not mention AI, bots, programs, or not having feelings.';
+const STAY_IN_CHARACTER_NUDGE = 'Your previous draft said or hinted that you are an AI, a bot, different from humans, or unable to feel love or emotions. Nobody asked about that. Write the reply again as ستاره, a real young woman: if they asked about your own life or feelings (for example whether you are in love), answer plainly like a person would (for example: no, you\'re not thinking about those things right now), then keep the conversation going. Do not mention AI, bots, programs, "you humans", or not having feelings.';
+
+const DARI_SCRIPT_NUDGE = 'Your previous draft was empty or used letters from another language or script. Write the reply again only in Dari, using Persian/Arabic script — no Latin, Pashto, Cyrillic, or other letters.';
+const ENGLISH_SCRIPT_NUDGE = 'Your previous draft was empty or used letters from another script. Write the reply again in plain English.';
 
 function getInCharacterFallback(allowLatin: boolean) {
   return allowLatin
@@ -306,20 +271,8 @@ function getInCharacterFallback(allowLatin: boolean) {
       ];
 }
 
-function getIntentReply(userMessage: string, lastReply?: string) {
-  const text = userMessage.trim();
-
-  const songRequest = /\b(آهنگ|ترانه|آواز|موسیقی|بخوان|پخش|روان کو)\b/u;
-
-  if (songRequest.test(text)) {
-    return pickVariant([
-      'اگر آهنگ مشخصی در نظر داری، نامش را بگو.',
-      'نام آهنگ را بفرست تا تلاش کنم پیدایش کنم.',
-      'کدام آهنگ را می‌خواهی؟',
-    ], lastReply);
-  }
-
-  return null;
+function toReplyText(content: unknown) {
+  return collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(typeof content === 'string' ? content : '')));
 }
 
 function cleanReply(reply: string) {
@@ -347,8 +300,17 @@ function collapseRepeatedWords(text: string) {
 // Matches repeated phrases even when separated by punctuation
 // (e.g. "خوشحال شم، خوشحال شم" — comma was previously missed
 // because the old pattern only matched whitespace-separated repeats).
+// Word edges use lookarounds, not \b: \b is ASCII-only, so it never
+// matched around Persian words (see isIdentityQuestion). ZWNJ and marks
+// count as part of a word so "می‌خواهم" stays one word.
+const PHRASE_WORD = '[\\p{L}\\p{N}\\p{M}\\u200c]';
+const REPEATED_PHRASE_PATTERN = new RegExp(
+  `(?<!${PHRASE_WORD})(${PHRASE_WORD}+(?:\\s+${PHRASE_WORD}+){0,3})(?:[\\s,،]+\\1(?!${PHRASE_WORD}))+`,
+  'giu',
+);
+
 function collapseRepeatedPhrases(text: string) {
-  const phrasePattern = /(\b[\p{L}\p{N}]+(?:\s+[\p{L}\p{N}]+){0,3}\b)(?:[\s,،]+\1\b)+/giu;
+  const phrasePattern = REPEATED_PHRASE_PATTERN;
   let previous: string;
   let current = text;
 
@@ -702,14 +664,6 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     return contentReply;
   }
 
-  const quickReply = getIntentReply(userMessage, lastAssistant);
-  if (quickReply) {
-    messages.push({ role: 'user', content: userMessage });
-    messages.push({ role: 'assistant', content: quickReply });
-    await saveConversation(senderId, messages);
-    return quickReply;
-  }
-
   messages.push({ role: 'user', content: userMessage });
 
   const summary = await getSummary(senderId);
@@ -733,20 +687,33 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     return fallback;
   }
 
-  const rawAnswer = completion.choices[0]?.message?.content;
-  let answer: string = collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(typeof rawAnswer === 'string' ? rawAnswer : '')));
-  if (revealsAIIdentity(answer)) {
+  // One more try with a corrective note appended. Returns '' if that call
+  // fails too.
+  const regenerate = async (nudge: string) => {
     const retry = await createChatCompletion({
       messages: [
         ...buildModelMessages(messages, summary),
-        { role: 'system', content: STAY_IN_CHARACTER_NUDGE },
+        { role: 'system', content: nudge },
       ],
       temperature: 0.7,
       max_tokens: 180,
     }).catch(() => null);
-    const retryContent = retry?.choices[0]?.message?.content;
-    answer = collapseRepeatedPhrases(collapseRepeatedWords(cleanReply(typeof retryContent === 'string' ? retryContent : '')));
+    return toReplyText(retry?.choices?.[0]?.message?.content);
+  };
+
+  let answer = toReplyText(completion.choices?.[0]?.message?.content);
+  if (revealsAIIdentity(answer)) {
+    answer = await regenerate(STAY_IN_CHARACTER_NUDGE);
     if (!answer || revealsAIIdentity(answer)) {
+      answer = pickVariant(getInCharacterFallback(allowLatin), lastAssistant);
+    }
+  }
+
+  // Empty replies and stray letters from other scripts get one retry
+  // before falling back to "ببخشید، درست نفهمیدم", which reads as broken.
+  if (!isNaturalReply(answer, allowLatin)) {
+    answer = await regenerate(allowLatin ? ENGLISH_SCRIPT_NUDGE : DARI_SCRIPT_NUDGE);
+    if (revealsAIIdentity(answer)) {
       answer = pickVariant(getInCharacterFallback(allowLatin), lastAssistant);
     }
   }
@@ -791,19 +758,27 @@ export async function getPhotoReply(
 ): Promise<{ caption: string; imageUrl: string } | null> {
   if (containsInappropriateLanguage(userMessage)) return null;
 
-  const wantsPhoto = isPhotoRequest(userMessage);
-  if (!wantsPhoto && !isMusicRequest(userMessage)) return null;
+  // Keywords only decide whether to ask the model; the model decides
+  // whether this is really a request ("عکس قشنگی بود" or "آهنگ گوش
+  // می‌کنم" are not). If the model can't be reached, the keyword answer
+  // stands.
+  const keywordIntent = isPhotoRequest(userMessage) ? 'photo' : isMusicRequest(userMessage) ? 'music' : null;
+  if (!keywordIntent && !mentionsPhoto(userMessage)) return null;
 
   const moderationStatus = await getModerationStatus(senderId);
   if (moderationStatus.blocked) return null;
 
+  const messages = await getConversation(senderId);
+  const lastAssistant = getLastAssistantMessage(messages);
+  const intent = (await detectIntent(userMessage, lastAssistant)) ?? keywordIntent;
+  if (intent !== 'photo' && intent !== 'music') return null;
+
   const imageUrl = await pickDrivePhoto(senderId);
   if (!imageUrl) return null;
 
-  const messages = await getConversation(senderId);
   const caption = pickVariant(
-    wantsPhoto ? PHOTO_CAPTIONS : MUSIC_PHOTO_CAPTIONS,
-    getLastAssistantMessage(messages),
+    intent === 'photo' ? PHOTO_CAPTIONS : MUSIC_PHOTO_CAPTIONS,
+    lastAssistant,
   );
   messages.push({ role: 'user', content: userMessage });
   messages.push({ role: 'assistant', content: caption });

@@ -27,6 +27,13 @@ export function isPhotoRequest(text: string) {
   return PHOTO_WORD.test(trimmed) && REQUEST_WORD.test(trimmed);
 }
 
+// Any mention of a picture, even without a request word. Only used as a
+// filter before asking the model (see detectIntent), which catches
+// requests phrased without one of the REQUEST_WORDs.
+export function mentionsPhoto(text: string) {
+  return PHOTO_WORD.test(text.trim());
+}
+
 // Song/music requests get a photo instead of links (links lead people to
 // the page, where they can download every picture).
 const MUSIC_WORD = /(آهنگ|آواز|ترانه|موسیقی|موزیک|\b(songs?|music|lyrics)\b)/iu;
