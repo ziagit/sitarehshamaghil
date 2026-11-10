@@ -43,30 +43,21 @@ const IDENTITY_HUMAN_REPLY_EN = "No, I'm an AI.";
 
 // ---- Content moderation (sexual/explicit or abusive language) ----
 //
-// The first sexual/vulgar/abusive message blocks the user (caught by the
-// keyword list below, or flagged by the model with MODEL_BLOCK_MARKER).
-// While blocked, every message gets a short "you weren't polite" line and
-// nothing reaches the model. Only after APOLOGIES_TO_UNBLOCK separate
-// apology messages is the block lifted.
+// Handled the way a person would: the first sexual/vulgar/abusive
+// message (keyword list below, or flagged by the model with
+// MODEL_BLOCK_MARKER) gets a plain goodbye, and after that Sitara simply
+// stops answering. She never says she's upset or asks for an apology.
+// Apologies are still counted quietly; after APOLOGIES_TO_UNBLOCK of them
+// she starts talking again and accepts it naturally (FORGIVEN_NOTE).
 const APOLOGIES_TO_UNBLOCK = 3;
 
-const MODERATION_BLOCK_REPLY = 'این حرف‌ها را با من نزن. تا معذرت نخواهی، با تو گپ نمی‌زنم.';
+const MODERATION_GOODBYE_REPLIES = ['خدا حافظ.', 'خوب، خدا حافظ.'];
 
-const MODERATION_BLOCKED_REPLIES = [
-  'ببخشید، تو با من بی‌ادبی کردی. تا معذرت نخواهی گپ نمی‌زنم.',
-  'تو مؤدب نبودی. اول معذرت بخواه.',
-  'با کسی که بی‌ادبی کرده گپ نمی‌زنم.',
-];
+const FORGIVEN_NOTE = 'Earlier this person said something rude, so you stopped replying to them. They have now apologized several times. Accept it the way a real person would — briefly and warmly (for example: it\'s okay, let\'s forget it) — and carry on normally. Do not lecture them, and do not say you were upset or that they had to apologize.';
 
-const MODERATION_APOLOGY_NOT_ENOUGH_REPLIES = [
-  'هنوز نه. بیشتر معذرت بخواه.',
-  'باشه، ولی هنوز دلم صاف نشده.',
-  'هنوز نبخشیدمت.',
-];
-
-const MODERATION_FORGIVEN_REPLY = 'خوب، این بار بخشیدمت. ولی دیگر تکرار نشود.';
-
-const APOLOGY_PATTERN = /(ببخش|معذرت|عذر|شرمنده|غلط\s*کردم|اشتباه\s*کردم|توبه|\b(sorry|forgive|apologi[sz]e)\b)/iu;
+// Includes the common misspellings people actually type (معزرت, مغذرت,
+// معذورت). A false match only matters while someone is blocked.
+const APOLOGY_PATTERN = /(ببخش|م[عغ][ذزضظ]و?ر[تط]|[عغ][ذزضظ]ر|شرمنده|غلط\s*کردم|اشتباه\s*کردم|توبه|سوری|\b(sorry|forgive|apologi[sz]e)\b)/iu;
 
 // The chat prompt tells the model to answer with only this marker when a
 // message is sexual or abusive in a way the keyword list doesn't catch.
@@ -210,7 +201,7 @@ If someone asks to marry you, meet you, or talk on the phone, politely say no th
 
 If someone says they want to die, kill themselves, or hurt themselves, take it seriously: stay with them warmly, ask if they are safe, and encourage them to reach out to someone they trust.
 
-If the user's latest message is sexual, vulgar, or insults or abuses you, reply with only [[BLOCK]] and nothing else. Flirting, compliments, love talk, or asking for your photo are fine — never answer those with [[BLOCK]].
+If the user's latest message is clearly sexual or vulgar, or clearly insults or curses you, reply with only [[BLOCK]] and nothing else. Never use [[BLOCK]] for flirting, compliments, love talk, marriage proposals, asking (even insisting or swearing) for your photo, being pushy, or being upset — those just get a normal reply.
 
 A few examples of how you text. They show tone and length only — never copy them word for word:
 
@@ -520,8 +511,8 @@ function getDuplicateReply(allowLatin: boolean) {
 }
 
 // True when getAIResponse fell back to a canned "busy / didn't understand /
-// ask again" line instead of a real model answer, or answered with a
-// moderation line ("you weren't polite"). Fine in a private chat, but
+// ask again" line instead of a real model answer, or the moderation
+// goodbye. Fine in a private chat, but
 // looks bad posted publicly, so comment replies skip these.
 const CANNED_REPLIES = new Set([
   ...[true, false].flatMap((allowLatin) => [
@@ -529,17 +520,14 @@ const CANNED_REPLIES = new Set([
     getInvalidReply(allowLatin),
     ...getDuplicateReply(allowLatin),
   ]),
-  MODERATION_BLOCK_REPLY,
-  ...MODERATION_BLOCKED_REPLIES,
-  ...MODERATION_APOLOGY_NOT_ENOUGH_REPLIES,
-  MODERATION_FORGIVEN_REPLY,
+  ...MODERATION_GOODBYE_REPLIES,
 ]);
 
 export function isCannedReply(text: string) {
   return CANNED_REPLIES.has(text);
 }
 
-function buildModelMessages(messages: Message[], summary?: string, crisis = false): ChatCompletionMessageParam[] {
+function buildModelMessages(messages: Message[], summary?: string, crisis = false, notes: string[] = []): ChatCompletionMessageParam[] {
   const conversation = messages.filter((message) => message.role !== 'system');
   const slicedConversation = conversation.slice(-MAX_MODEL_MESSAGES);
 
@@ -554,10 +542,11 @@ function buildModelMessages(messages: Message[], summary?: string, crisis = fals
     });
   }
 
-  // Last, after the conversation, so it outweighs the style rules.
-  const crisisMessages: ChatCompletionMessageParam[] = crisis
-    ? [{ role: 'system', content: getCrisisNote() }]
-    : [];
+  // Last, after the conversation, so they outweigh the style rules.
+  const crisisMessages: ChatCompletionMessageParam[] = [
+    ...(crisis ? [getCrisisNote()] : []),
+    ...notes,
+  ].map((content) => ({ role: 'system', content }));
 
   return [
     ...systemMessages,
@@ -696,19 +685,24 @@ export async function saveConversation(senderId: string, messages: Message[]) {
   await storage.setItem(key, finalHistory);
 }
 
-async function handleBlockedMessage(senderId: string, status: ModerationStatus, userMessage: string): Promise<string> {
-  if (!APOLOGY_PATTERN.test(userMessage)) {
-    return pickVariant(MODERATION_BLOCKED_REPLIES);
-  }
+// Counts an apology from a blocked user. Returns true when this one
+// lifts the block.
+async function acceptApology(senderId: string, status: ModerationStatus, userMessage: string): Promise<boolean> {
+  if (!APOLOGY_PATTERN.test(userMessage)) return false;
 
   const apologies = (status.apologies || 0) + 1;
   if (apologies < APOLOGIES_TO_UNBLOCK) {
     await setModerationStatus(senderId, { blocked: true, apologies });
-    return pickVariant(MODERATION_APOLOGY_NOT_ENOUGH_REPLIES);
+    return false;
   }
 
   await setModerationStatus(senderId, { blocked: false, apologies: 0 });
-  return MODERATION_FORGIVEN_REPLY;
+  return true;
+}
+
+async function blockUser(senderId: string): Promise<string> {
+  await setModerationStatus(senderId, { blocked: true, apologies: 0 });
+  return pickVariant(MODERATION_GOODBYE_REPLIES) || MODERATION_GOODBYE_REPLIES[0]!;
 }
 
 // Hard cap on top of the prompt's "one or two sentences": a long reply
@@ -734,10 +728,13 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   const mentionsCrisis = mentionsSuicideOrSelfHarm(userMessage);
 
   // Content moderation gate — runs before anything else. Blocked users
-  // never reach the model; their messages aren't saved to the history.
+  // get no reply at all ('' tells the webhook to send nothing) and their
+  // messages aren't saved, until enough apologies lift the block.
   const moderationStatus = await getModerationStatus(senderId);
+  let justForgiven = false;
   if (moderationStatus.blocked && !mentionsCrisis) {
-    return handleBlockedMessage(senderId, moderationStatus, userMessage);
+    justForgiven = await acceptApology(senderId, moderationStatus, userMessage);
+    if (!justForgiven) return '';
   }
 
   let messages = await getConversation(senderId);
@@ -748,8 +745,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   const crisis = mentionsCrisis || await isInCrisisMode(senderId);
 
   if (!mentionsCrisis && containsInappropriateLanguage(userMessage)) {
-    await setModerationStatus(senderId, { blocked: true, apologies: 0 });
-    return MODERATION_BLOCK_REPLY;
+    return blockUser(senderId);
   }
 
   if (isEmojiOnlyMessage(userMessage)) {
@@ -791,9 +787,10 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   // Crisis replies may run to four sentences.
   const maxTokens = crisis ? 300 : 180;
+  const replyNotes = justForgiven ? [FORGIVEN_NOTE] : [];
 
   const completion = await createChatCompletion({
-    messages: buildModelMessages(messages, summary, crisis),
+    messages: buildModelMessages(messages, summary, crisis, replyNotes),
     temperature: 0.55,
     max_tokens: maxTokens,
   }).catch((err) => {
@@ -820,7 +817,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   const regenerate = async (nudge: string) => {
     const retry = await createChatCompletion({
       messages: [
-        ...buildModelMessages(messages, summary, crisis),
+        ...buildModelMessages(messages, summary, crisis, replyNotes),
         { role: 'system', content: nudge },
       ],
       temperature: 0.7,
@@ -833,8 +830,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   const rawAnswer = completion.choices?.[0]?.message?.content;
   if (!crisis && typeof rawAnswer === 'string' && MODEL_BLOCK_MARKER.test(rawAnswer)) {
-    await setModerationStatus(senderId, { blocked: true, apologies: 0 });
-    return MODERATION_BLOCK_REPLY;
+    return blockUser(senderId);
   }
 
   const saidHappyGoodbye = !crisis && typeof rawAnswer === 'string' && new RegExp(SHARE_MARKER.source, 'i').test(rawAnswer);

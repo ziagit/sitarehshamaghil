@@ -67,6 +67,7 @@ export default defineEventHandler(async (event) => {
         // AI Logic (Sitar Personality)
         const replyText = await getAIResponse(sender, messageText)
 
+        // '' means the user is moderation-blocked: send nothing at all
         if (!replyText) return { ok: true }
 
         // Send to Messenger
