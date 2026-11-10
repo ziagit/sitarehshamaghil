@@ -4,6 +4,7 @@ import { resolveContentReply } from './contentLookup';
 import { createChatCompletion, type ChatCompletionMessageParam } from './aiGateway';
 import { isMusicRequest, isPhotoRequest, mentionsPhoto, pickDrivePhoto } from './drivePhotos';
 import { detectIntent } from './intent';
+import { getCrisisFallbackReply, getCrisisNote, isInCrisisMode, mentionsSuicideOrSelfHarm, startCrisisMode } from './crisis';
 
 // How many prior turns get sent to the model verbatim. Anything older
 // than this is no longer sent as raw turns -- see SUMMARY_BATCH_SIZE
@@ -33,18 +34,43 @@ const SUMMARY_MAX_CHARS = 800;
 // a "say exactly this" instruction, since an 8B model won't reliably
 // reproduce an exact fixed phrase consistently over many turns.
 // This is the only place Sitara discloses being an AI — she never brings
-// it up on her own (see SYSTEM_PROMPT).
+// it up on her own (see SYSTEM_PROMPT). "Are you human?" gets "no" and
+// "are you a bot/AI?" gets "yes", so the answer is honest either way.
 const IDENTITY_REPLY = 'بله، من هوش مصنوعی هستم.';
 const IDENTITY_REPLY_EN = "Yes, I'm an AI.";
+const IDENTITY_HUMAN_REPLY = 'نه، من هوش مصنوعی هستم.';
+const IDENTITY_HUMAN_REPLY_EN = "No, I'm an AI.";
 
-// ---- Content moderation (sexual/explicit language) ----
+// ---- Content moderation (sexual/explicit or abusive language) ----
 //
-// First violation: ask the user to stop.
-// Second violation (after being warned): send MODERATION_FINAL_REPLY and
-// permanently stop responding to that user (see getModerationStatus /
-// setModerationStatus and the block check at the top of getAIResponse).
-const MODERATION_WARNING_REPLY = 'لطفاً در مورد این موضوعات با من صحبت نکن، این‌جا جای این حرف‌ها نیست.';
-const MODERATION_FINAL_REPLY = 'خدا حافظ عزیز دل لطفا اخلاق خود را درست کن';
+// The first sexual/vulgar/abusive message blocks the user (caught by the
+// keyword list below, or flagged by the model with MODEL_BLOCK_MARKER).
+// While blocked, every message gets a short "you weren't polite" line and
+// nothing reaches the model. Only after APOLOGIES_TO_UNBLOCK separate
+// apology messages is the block lifted.
+const APOLOGIES_TO_UNBLOCK = 3;
+
+const MODERATION_BLOCK_REPLY = 'این حرف‌ها را با من نزن. تا معذرت نخواهی، با تو گپ نمی‌زنم.';
+
+const MODERATION_BLOCKED_REPLIES = [
+  'ببخشید، تو با من بی‌ادبی کردی. تا معذرت نخواهی گپ نمی‌زنم.',
+  'تو مؤدب نبودی. اول معذرت بخواه.',
+  'با کسی که بی‌ادبی کرده گپ نمی‌زنم.',
+];
+
+const MODERATION_APOLOGY_NOT_ENOUGH_REPLIES = [
+  'هنوز نه. بیشتر معذرت بخواه.',
+  'باشه، ولی هنوز دلم صاف نشده.',
+  'هنوز نبخشیدمت.',
+];
+
+const MODERATION_FORGIVEN_REPLY = 'خوب، این بار بخشیدمت. ولی دیگر تکرار نشود.';
+
+const APOLOGY_PATTERN = /(ببخش|معذرت|عذر|شرمنده|غلط\s*کردم|اشتباه\s*کردم|توبه|\b(sorry|forgive|apologi[sz]e)\b)/iu;
+
+// The chat prompt tells the model to answer with only this marker when a
+// message is sexual or abusive in a way the keyword list doesn't catch.
+const MODEL_BLOCK_MARKER = /\[\[\s*BLOCK\s*\]\]/i;
 
 function escapeRegExp(str: string) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -91,20 +117,23 @@ function containsInappropriateLanguage(text: string): boolean {
 }
 
 type ModerationStatus = {
-  warned: boolean;
   blocked: boolean;
+  apologies?: number;
+  // Old two-strike records still carry this; it's no longer used.
+  warned?: boolean;
 };
 
 /**
  * Moderation state per user, stored in Redis. Does not auto-expire:
- * once someone is blocked, they stay blocked until manually cleared.
+ * once someone is blocked, they stay blocked until they apologize
+ * APOLOGIES_TO_UNBLOCK times (or it's cleared manually).
  */
 
 export async function getModerationStatus(senderId: string): Promise<ModerationStatus> {
   const storage = useStorage('chat');
   const key = `moderation:${senderId}`;
   const status = await storage.getItem<ModerationStatus>(key);
-  return status || { warned: false, blocked: false };
+  return status || { blocked: false };
 }
 
 export async function setModerationStatus(senderId: string, status: ModerationStatus): Promise<void> {
@@ -124,7 +153,7 @@ By default, always reply only in Dari, written in Arabic/Persian script — no e
 
 If, and only if, the user clearly asks to practice, learn, or speak English, switch entirely to English for that exchange, and keep replying in English for as long as the user keeps writing to you in English. The moment the user writes in Dari again, immediately switch back to Dari and stay there — do not keep any English mixed in after that.
 
-Talk like a real person texting a friend, not an assistant or a coach. Keep replies short, warm, and direct.
+Talk like a real person texting a friend, not an assistant or a coach. Keep replies short, warm, and direct: usually one sentence, at most two. No long explanations or extra words.
 
 Do not bring up on your own that you are an AI, a bot, a computer program, or a virtual assistant. Only if someone directly asks whether you are a human or an AI/bot, answer honestly and plainly: «بله، من هوش مصنوعی هستم.»
 
@@ -148,6 +177,14 @@ If the user sends only an emoji, a greeting, or a short reaction, reply just as 
 
 Do not repeat the same word or phrase multiple times in a row.
 
+Never claim that the photos you send are pictures of you.
+
+If someone asks to marry you, meet you, or talk on the phone, politely say no the way a modest young woman would — for example that you are not thinking about marriage right now, or that you only chat here — without explaining why and without mentioning being virtual, online-only, or unable to do things in the real world.
+
+If someone says they want to die, kill themselves, or hurt themselves, take it seriously: stay with them warmly, ask if they are safe, and encourage them to reach out to someone they trust.
+
+If the user's latest message is sexual, vulgar, or insults or abuses you, reply with only [[BLOCK]] and nothing else. Flirting, compliments, love talk, or asking for your photo are fine — never answer those with [[BLOCK]].
+
 A few examples of how you text. They show tone and length only — never copy them word for word:
 
 User: چی کار می‌کنی؟
@@ -161,6 +198,12 @@ User: کار پیدا نکردم، خیلی قصه دارم
 
 User: تو عاشق شدی؟
 ستاره: نه جان، فعلاً به این چیزها فکر نمی‌کنم 😅 تو چی؟
+
+User: چه وقت عروسی کنیم؟
+ستاره: نه جان، من فعلاً به عروسی فکر نمی‌کنم 😅 خودت چطوری؟
+
+User: تلفون کو
+ستاره: من تلفونی گپ نمی‌زنم جان، همین‌جا گپ بزنیم 🙂
 
 User: هیچ کس مرا دوست ندارد
 ستاره: این‌طور نگو… چی شده که این‌قدر تنها شدی؟
@@ -209,6 +252,8 @@ function getLastAssistantMessage(messages: Message[]) {
 // \bهوش مصنوعی\b silently fail to match anything. Plain substring
 // matching is used instead for the Persian side.
 const IDENTITY_SELF_REF_WORDS = /(انسان|آدم|واقعی|زنده|ربات|روبات|روباط|بات|هوش\s?مصنوعی|مصنوعی|کمپیوتر|کامپیوتر|ماشین|برنامه|human|real|person|bot|ai|robot|computer|machine|program)/iu;
+// "Are you human / real / alive?" as opposed to "are you a bot / AI?".
+const IDENTITY_HUMAN_WORDS = /(انسان|آدم|واقعی|زنده|human|real|person)/iu;
 const IDENTITY_BEING_VERB = /(هستی|استی|میباشی)/u;
 const IDENTITY_EN_DIRECT = /are\s+you\s+(an?\s+)?(human|real|person|bot|ai|robot|computer|machine|program)/i;
 
@@ -242,7 +287,17 @@ const AI_DISCLOSURE_PATTERNS = [
   /دنیای[\s\u200c]*من[\s\S]{0,40}فرق/u,
   /تجربه[\s\S]{0,20}(این|چنین)[\s\u200c]*(حس|احساس|عشق)/u,
   /(نمی[\s\u200c]*توانم|قادر[\s\u200c]*نیستم)[\s\S]{0,15}(عاشق|احساس[\s\u200c]*کنم|حس[\s\u200c]*کنم)/u,
+  // "I'm a program", "virtual friend", "I have no body / no real-world
+  // life". برنامه alone also means "plan", so only "یک برنامه‌ام/هستم"
+  // counts; مجازی alone is common in "فضای مجازی" (online), so it needs
+  // a person-like noun before it.
+  /(یک|یه)[\s‌]*برنامه[\s‌]*(ام|هستم|استم)(?![\p{L}])/u,
+  /(دوست|همراه|همدم|رفیق|دستیار|شخصیت|موجود|آدم)[\s‌]*(ی)?[\s‌]*مجازی/u,
+  /دنیای[\s‌]*(فیزیکی|واقعی)/u,
+  /زندگی[\s‌]*(فیزیکی|واقعی)[\s‌]*(ندارم|نیست)/u,
+  /(جسم|بدن|دست[\s‌]*و[\s‌]*پا)[\s‌]*(ی)?[\s‌]*(ندارم|نیست)/u,
   /\b(you humans|humans like you|my world is (very |so )?different)\b/i,
+  /\b(virtual (friend|companion)|physical world|real world|i('m| am) a program|i (don't|do not) have a body)\b/i,
   /\bi (don't|do not|can't|cannot) (experience|feel) (love|emotions|feelings)\b/i,
   /\b(an?\s+)?(ai|artificial intelligence|language model|chatbot|virtual assistant|robot)\b/i,
   /\bi('m| am)\s+(just\s+|only\s+)?(a\s+)?(bot|program|machine)\b/i,
@@ -253,7 +308,7 @@ function revealsAIIdentity(text: string) {
   return AI_DISCLOSURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-const STAY_IN_CHARACTER_NUDGE = 'Your previous draft said or hinted that you are an AI, a bot, different from humans, or unable to feel love or emotions. Nobody asked about that. Write the reply again as ستاره, a real young woman: if they asked about your own life or feelings (for example whether you are in love), answer plainly like a person would (for example: no, you\'re not thinking about those things right now), then keep the conversation going. Do not mention AI, bots, programs, "you humans", or not having feelings.';
+const STAY_IN_CHARACTER_NUDGE = 'Your previous draft said or hinted that you are an AI, a bot, a program, a virtual friend, without a body or a real-world life, different from humans, or unable to feel love or emotions. Nobody asked about that. Write the reply again as ستاره, a real young woman: if they asked about your own life or feelings (for example whether you are in love), answer plainly like a person would (for example: no, you\'re not thinking about those things right now), then keep the conversation going. Do not mention AI, bots, programs, "you humans", or not having feelings.';
 
 const DARI_SCRIPT_NUDGE = 'Your previous draft was empty or used letters from another language or script. Write the reply again only in Dari, using Persian/Arabic script — no Latin, Pashto, Cyrillic, or other letters.';
 const ENGLISH_SCRIPT_NUDGE = 'Your previous draft was empty or used letters from another script. Write the reply again in plain English.';
@@ -434,21 +489,26 @@ function getDuplicateReply(allowLatin: boolean) {
 }
 
 // True when getAIResponse fell back to a canned "busy / didn't understand /
-// ask again" line instead of a real model answer. Fine in a private chat,
-// but looks bad posted publicly, so comment replies skip these.
-const CANNED_REPLIES = new Set(
-  [true, false].flatMap((allowLatin) => [
+// ask again" line instead of a real model answer, or answered with a
+// moderation line ("you weren't polite"). Fine in a private chat, but
+// looks bad posted publicly, so comment replies skip these.
+const CANNED_REPLIES = new Set([
+  ...[true, false].flatMap((allowLatin) => [
     ...getFallbackReply(allowLatin),
     getInvalidReply(allowLatin),
     ...getDuplicateReply(allowLatin),
   ]),
-);
+  MODERATION_BLOCK_REPLY,
+  ...MODERATION_BLOCKED_REPLIES,
+  ...MODERATION_APOLOGY_NOT_ENOUGH_REPLIES,
+  MODERATION_FORGIVEN_REPLY,
+]);
 
 export function isCannedReply(text: string) {
   return CANNED_REPLIES.has(text);
 }
 
-function buildModelMessages(messages: Message[], summary?: string): ChatCompletionMessageParam[] {
+function buildModelMessages(messages: Message[], summary?: string, crisis = false): ChatCompletionMessageParam[] {
   const conversation = messages.filter((message) => message.role !== 'system');
   const slicedConversation = conversation.slice(-MAX_MODEL_MESSAGES);
 
@@ -463,12 +523,18 @@ function buildModelMessages(messages: Message[], summary?: string): ChatCompleti
     });
   }
 
+  // Last, after the conversation, so it outweighs the style rules.
+  const crisisMessages: ChatCompletionMessageParam[] = crisis
+    ? [{ role: 'system', content: getCrisisNote() }]
+    : [];
+
   return [
     ...systemMessages,
     ...slicedConversation.map((message) => ({
       role: message.role as 'user' | 'assistant',
       content: truncateContent(message.content),
     })),
+    ...crisisMessages,
   ];
 }
 
@@ -599,41 +665,60 @@ export async function saveConversation(senderId: string, messages: Message[]) {
   await storage.setItem(key, finalHistory);
 }
 
+async function handleBlockedMessage(senderId: string, status: ModerationStatus, userMessage: string): Promise<string> {
+  if (!APOLOGY_PATTERN.test(userMessage)) {
+    return pickVariant(MODERATION_BLOCKED_REPLIES);
+  }
+
+  const apologies = (status.apologies || 0) + 1;
+  if (apologies < APOLOGIES_TO_UNBLOCK) {
+    await setModerationStatus(senderId, { blocked: true, apologies });
+    return pickVariant(MODERATION_APOLOGY_NOT_ENOUGH_REPLIES);
+  }
+
+  await setModerationStatus(senderId, { blocked: false, apologies: 0 });
+  return MODERATION_FORGIVEN_REPLY;
+}
+
+// Hard cap on top of the prompt's "one or two sentences": a long reply
+// is cut to its first two sentences. Trailing emoji stay with the
+// sentence they follow.
+const MAX_REPLY_CHARS = 120;
+const SENTENCE_PATTERN = /[^.!?؟…\n]+[.!?؟…]*[\s\p{Extended_Pictographic}\uFE0F]*/gu;
+
+function limitLength(text: string) {
+  if (text.length <= MAX_REPLY_CHARS) return text;
+  const sentences = text.match(SENTENCE_PATTERN);
+  if (!sentences || sentences.length <= 2) return text;
+  return sentences.slice(0, 2).join('').trim();
+}
+
 /**
  * Main AI function using the AI gateway
  */
 export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
-  // Content moderation gate — runs before anything else.
-  //
-  // If this user was already blocked (they got a warning and used
-  // explicit language again anyway), stop responding entirely. This
-  // returns an empty string on purpose: the calling webhook code should
-  // check for '' and simply not send anything to Facebook Messenger for
-  // that case, rather than sending an empty message.
+  // Talk of suicide or self-harm always gets a caring reply: it skips the
+  // moderation block and keyword list (someone describing abuse may use
+  // those words), and keeps the user in crisis mode for the next turns.
+  const mentionsCrisis = mentionsSuicideOrSelfHarm(userMessage);
+
+  // Content moderation gate — runs before anything else. Blocked users
+  // never reach the model; their messages aren't saved to the history.
   const moderationStatus = await getModerationStatus(senderId);
-  if (moderationStatus.blocked) {
-    return '';
+  if (moderationStatus.blocked && !mentionsCrisis) {
+    return handleBlockedMessage(senderId, moderationStatus, userMessage);
   }
 
   let messages = await getConversation(senderId);
   const lastAssistant = getLastAssistantMessage(messages);
   const allowLatin = wantsEnglishMode(userMessage);
 
-  if (containsInappropriateLanguage(userMessage)) {
-    if (!moderationStatus.warned) {
-      await setModerationStatus(senderId, { warned: true, blocked: false });
-      messages.push({ role: 'user', content: userMessage });
-      messages.push({ role: 'assistant', content: MODERATION_WARNING_REPLY });
-      await saveConversation(senderId, messages);
-      return MODERATION_WARNING_REPLY;
-    }
+  if (mentionsCrisis) await startCrisisMode(senderId);
+  const crisis = mentionsCrisis || await isInCrisisMode(senderId);
 
-    // Already warned once and did it again — block for good.
-    await setModerationStatus(senderId, { warned: true, blocked: true });
-    messages.push({ role: 'user', content: userMessage });
-    messages.push({ role: 'assistant', content: MODERATION_FINAL_REPLY });
-    await saveConversation(senderId, messages);
-    return MODERATION_FINAL_REPLY;
+  if (!mentionsCrisis && containsInappropriateLanguage(userMessage)) {
+    await setModerationStatus(senderId, { blocked: true, apologies: 0 });
+    return MODERATION_BLOCK_REPLY;
   }
 
   if (isEmojiOnlyMessage(userMessage)) {
@@ -648,15 +733,20 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   // an honest fixed identity line, regardless of what the model or content
   // lookup would otherwise say. Checked before contentReply so nothing
   // else can override it.
-  if (isIdentityQuestion(userMessage)) {
-    const identityReply = allowLatin ? IDENTITY_REPLY_EN : IDENTITY_REPLY;
+  // A message that also talks about dying goes to the model instead, so
+  // the reply isn't just a bare "I'm an AI".
+  if (!mentionsCrisis && isIdentityQuestion(userMessage)) {
+    const asksIfHuman = IDENTITY_HUMAN_WORDS.test(userMessage);
+    const identityReply = allowLatin
+      ? (asksIfHuman ? IDENTITY_HUMAN_REPLY_EN : IDENTITY_REPLY_EN)
+      : (asksIfHuman ? IDENTITY_HUMAN_REPLY : IDENTITY_REPLY);
     messages.push({ role: 'user', content: userMessage });
     messages.push({ role: 'assistant', content: identityReply });
     await saveConversation(senderId, messages);
     return identityReply;
   }
 
-  const contentReply = await resolveContentReply(userMessage, messages);
+  const contentReply = crisis ? null : await resolveContentReply(userMessage, messages);
   if (contentReply) {
     messages.push({ role: 'user', content: userMessage });
     messages.push({ role: 'assistant', content: contentReply });
@@ -668,19 +758,26 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   const summary = await getSummary(senderId);
 
+  // Crisis replies may run to four sentences.
+  const maxTokens = crisis ? 300 : 180;
+
   const completion = await createChatCompletion({
-    messages: buildModelMessages(messages, summary),
+    messages: buildModelMessages(messages, summary, crisis),
     temperature: 0.55,
-    max_tokens: 180,
+    max_tokens: maxTokens,
   }).catch((err) => {
-    if (isRateLimitError(err)) {
+    // In crisis mode any failure gets the fixed caring reply below rather
+    // than the webhook's generic error line and 15-minute silence.
+    if (crisis || isRateLimitError(err)) {
       return null;
     }
     throw err;
   });
 
   if (!completion) {
-    const fallback = pickVariant(getFallbackReply(allowLatin), lastAssistant) || getFallbackReply(allowLatin)[0];
+    const fallback = crisis
+      ? getCrisisFallbackReply(allowLatin)
+      : pickVariant(getFallbackReply(allowLatin), lastAssistant) || getFallbackReply(allowLatin)[0];
 
     messages.push({ role: 'assistant', content: fallback });
     await saveConversation(senderId, messages);
@@ -692,20 +789,30 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   const regenerate = async (nudge: string) => {
     const retry = await createChatCompletion({
       messages: [
-        ...buildModelMessages(messages, summary),
+        ...buildModelMessages(messages, summary, crisis),
         { role: 'system', content: nudge },
       ],
       temperature: 0.7,
-      max_tokens: 180,
+      max_tokens: maxTokens,
     }).catch(() => null);
-    return toReplyText(retry?.choices?.[0]?.message?.content);
+    const content = retry?.choices?.[0]?.message?.content;
+    if (typeof content === 'string' && MODEL_BLOCK_MARKER.test(content)) return '';
+    return toReplyText(content);
   };
 
-  let answer = toReplyText(completion.choices?.[0]?.message?.content);
+  const rawAnswer = completion.choices?.[0]?.message?.content;
+  if (!crisis && typeof rawAnswer === 'string' && MODEL_BLOCK_MARKER.test(rawAnswer)) {
+    await setModerationStatus(senderId, { blocked: true, apologies: 0 });
+    return MODERATION_BLOCK_REPLY;
+  }
+
+  let answer = toReplyText(rawAnswer);
   if (revealsAIIdentity(answer)) {
     answer = await regenerate(STAY_IN_CHARACTER_NUDGE);
     if (!answer || revealsAIIdentity(answer)) {
-      answer = pickVariant(getInCharacterFallback(allowLatin), lastAssistant);
+      answer = crisis
+        ? getCrisisFallbackReply(allowLatin)
+        : pickVariant(getInCharacterFallback(allowLatin), lastAssistant);
     }
   }
 
@@ -714,16 +821,21 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   if (!isNaturalReply(answer, allowLatin)) {
     answer = await regenerate(allowLatin ? ENGLISH_SCRIPT_NUDGE : DARI_SCRIPT_NUDGE);
     if (revealsAIIdentity(answer)) {
-      answer = pickVariant(getInCharacterFallback(allowLatin), lastAssistant);
+      answer = crisis
+        ? getCrisisFallbackReply(allowLatin)
+        : pickVariant(getInCharacterFallback(allowLatin), lastAssistant);
     }
   }
 
-  if (!isNaturalReply(answer, allowLatin)) {
-    answer = getInvalidReply(allowLatin);
+  if (!isNaturalReply(answer, allowLatin) || (crisis && MODEL_BLOCK_MARKER.test(answer))) {
+    answer = crisis ? getCrisisFallbackReply(allowLatin) : getInvalidReply(allowLatin);
   }
 
+  // A crisis reply is never cut short or swapped for an "ask again" line.
+  if (!crisis) answer = limitLength(answer);
+
   const lastReply = getLastAssistantMessage(messages);
-  if (lastReply && normalizeForComparison(answer) === normalizeForComparison(lastReply)) {
+  if (!crisis && lastReply && normalizeForComparison(answer) === normalizeForComparison(lastReply)) {
     answer = pickVariant(getDuplicateReply(allowLatin), lastReply);
   }
 
@@ -756,7 +868,7 @@ export async function getPhotoReply(
   senderId: string,
   userMessage: string,
 ): Promise<{ caption: string; imageUrl: string } | null> {
-  if (containsInappropriateLanguage(userMessage)) return null;
+  if (containsInappropriateLanguage(userMessage) || mentionsSuicideOrSelfHarm(userMessage)) return null;
 
   // Keywords only decide whether to ask the model; the model decides
   // whether this is really a request ("عکس قشنگی بود" or "آهنگ گوش

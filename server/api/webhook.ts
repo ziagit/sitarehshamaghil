@@ -2,6 +2,7 @@
 import { sendMessengerImage, sendMessengerReply, sendTypingAction } from "../utils/messenger"
 import { extractCommentEvent, sendFacebookCommentReply } from "../utils/facebookComments"
 import { getAIResponse, getErrorStatus, getPhotoReply, isCannedReply, setErrorStatus } from "../utils/chatMemory"
+import { mentionsSuicideOrSelfHarm } from "../utils/crisis"
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -41,9 +42,10 @@ export default defineEventHandler(async (event) => {
         // Mark as processed (Redis via Upstash)
         await storage.setItem(processedKey, true)
 
-        // Check if user is in "Error Cooldown"
+        // Check if user is in "Error Cooldown" -- except for talk of
+        // suicide or self-harm, which is never left unanswered
         const isErrored = await getErrorStatus(sender)
-        if (isErrored) return { ok: true }
+        if (isErrored && !mentionsSuicideOrSelfHarm(messageText)) return { ok: true }
 
         // Interaction
         await sendTypingAction(sender)
@@ -60,7 +62,6 @@ export default defineEventHandler(async (event) => {
         // AI Logic (Sitar Personality)
         const replyText = await getAIResponse(sender, messageText)
 
-        // '' means the user is moderation-blocked: send nothing at all
         if (!replyText) return { ok: true }
 
         // Send to Messenger
@@ -82,8 +83,8 @@ export default defineEventHandler(async (event) => {
         const senderKey = `comment:${commentEvent.authorId || commentEvent.commentId}`
         const replyText = await getAIResponse(senderKey, commentEvent.message)
 
-        // '' means the user is moderation-blocked; canned fallbacks
-        // ("busy, ask again") shouldn't be posted publicly under a post.
+        // Canned fallbacks ("busy, ask again") and moderation lines
+        // ("you weren't polite") shouldn't be posted publicly under a post.
         if (!replyText || isCannedReply(replyText)) return { ok: true }
 
         await sendFacebookCommentReply({
