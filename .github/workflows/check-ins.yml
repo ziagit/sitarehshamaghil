@@ -1,0 +1,25 @@
+# Asks the site to send Sitara's check-in messages (see
+# server/utils/checkIns.ts). Needs two repository secrets:
+#   SITARA_URL      - the deployed site, e.g. https://example.vercel.app
+#   CHECKIN_SECRET  - same value as the CHECKIN_SECRET env var on the site
+name: Sitara check-ins
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check-ins:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send check-ins
+        env:
+          SITARA_URL: ${{ secrets.SITARA_URL }}
+          CHECKIN_SECRET: ${{ secrets.CHECKIN_SECRET }}
+        run: |
+          if [ -z "$SITARA_URL" ] || [ -z "$CHECKIN_SECRET" ]; then
+            echo "SITARA_URL or CHECKIN_SECRET secret is not set; skipping."
+            exit 0
+          fi
+          curl -fsS -X POST "$SITARA_URL/api/check-ins" -H "Authorization: Bearer $CHECKIN_SECRET"

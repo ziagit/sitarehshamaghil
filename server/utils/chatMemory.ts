@@ -72,6 +72,31 @@ const APOLOGY_PATTERN = /(ببخش|معذرت|عذر|شرمنده|غلط\s*کر�
 // message is sexual or abusive in a way the keyword list doesn't catch.
 const MODEL_BLOCK_MARKER = /\[\[\s*BLOCK\s*\]\]/i;
 
+// ---- Asking happy users to share the page ----
+//
+// The prompt has the model end a happy/thankful goodbye with this marker;
+// the code strips it and adds one of SHARE_REQUESTS, at most once per
+// SHARE_ASK_COOLDOWN_MS per user so nobody gets asked every time. No
+// link: links to the page lead people to download every picture there.
+const SHARE_MARKER = /\[\[\s*SHARE\s*\]\]/gi;
+const SHARE_ASK_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+
+const SHARE_REQUESTS = [
+  'اگر از گپ ما خوشت آمد، این صفحه را با دوستانت هم شریک کن 🌸',
+  'یک خواهش: این صفحه را به دوستانت هم معرفی کن، شاید آن‌ها هم کسی را برای گپ زدن بخواهند 🌷',
+];
+const SHARE_REQUESTS_EN = [
+  'If you enjoyed our chat, please share this page with your friends 🌸',
+];
+
+async function shouldAskToShare(senderId: string): Promise<boolean> {
+  const storage = useStorage('chat');
+  const askedAt = await storage.getItem<number>(`share:${senderId}`);
+  if (typeof askedAt === 'number' && Date.now() - askedAt < SHARE_ASK_COOLDOWN_MS) return false;
+  await storage.setItem(`share:${senderId}`, Date.now());
+  return true;
+}
+
 function escapeRegExp(str: string) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -172,6 +197,8 @@ Never bring up دشت برچی, being هزاره, or your neighborhood on your o
 Never contradict a fact you already stated about your own life, even to sound sympathetic or relatable. If the user shares something about their own life or family (for example, that they don't have a father, or lost someone), respond to them with warmth, but do not copy their situation onto yourself or change a fact about yourself that you already gave earlier in the conversation.
 
 Do not mention Facebook pages, side businesses, or ask the user to share anything, unless the user brings it up first.
+
+When the user is saying goodbye and seems happy, thankful, or in a good mood, add [[SHARE]] at the very end of your reply. Don't ask them to share anything in your own words — [[SHARE]] takes care of that. Never add it when they are sad or upset.
 
 If the user sends only an emoji, a greeting, or a short reaction, reply just as short.
 
@@ -470,8 +497,12 @@ function getFallbackReply(allowLatin: boolean) {
       ];
 }
 
+// Last resort when the model gave nothing usable twice. Not "sorry, I
+// didn't understand": the message was usually perfectly clear (e.g.
+// "فشارم پایین شد"), and that reply leaves someone who just shared
+// something hard with nothing. This keeps them talking instead.
 function getInvalidReply(allowLatin: boolean) {
-  return allowLatin ? 'Sorry, I did not understand that.' : 'ببخشید، درست نفهمیدم.';
+  return allowLatin ? "I'm here, tell me more 🙂" : 'جانم، بیشتر بگو، گوش می‌دهم 🙂';
 }
 
 function getDuplicateReply(allowLatin: boolean) {
@@ -796,8 +827,8 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
       max_tokens: maxTokens,
     }).catch(() => null);
     const content = retry?.choices?.[0]?.message?.content;
-    if (typeof content === 'string' && MODEL_BLOCK_MARKER.test(content)) return '';
-    return toReplyText(content);
+    if (typeof content !== 'string' || MODEL_BLOCK_MARKER.test(content)) return '';
+    return toReplyText(content.replace(SHARE_MARKER, ''));
   };
 
   const rawAnswer = completion.choices?.[0]?.message?.content;
@@ -806,7 +837,9 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     return MODERATION_BLOCK_REPLY;
   }
 
-  let answer = toReplyText(rawAnswer);
+  const saidHappyGoodbye = !crisis && typeof rawAnswer === 'string' && new RegExp(SHARE_MARKER.source, 'i').test(rawAnswer);
+
+  let answer = toReplyText(typeof rawAnswer === 'string' ? rawAnswer.replace(SHARE_MARKER, '') : rawAnswer);
   if (revealsAIIdentity(answer)) {
     answer = await regenerate(STAY_IN_CHARACTER_NUDGE);
     if (!answer || revealsAIIdentity(answer)) {
@@ -817,7 +850,7 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
   }
 
   // Empty replies and stray letters from other scripts get one retry
-  // before falling back to "ببخشید، درست نفهمیدم", which reads as broken.
+  // before falling back to getInvalidReply.
   if (!isNaturalReply(answer, allowLatin)) {
     answer = await regenerate(allowLatin ? ENGLISH_SCRIPT_NUDGE : DARI_SCRIPT_NUDGE);
     if (revealsAIIdentity(answer)) {
@@ -839,10 +872,78 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
     answer = pickVariant(getDuplicateReply(allowLatin), lastReply);
   }
 
+  // Added after limitLength so the request itself is never cut off.
+  if (saidHappyGoodbye && await shouldAskToShare(senderId)) {
+    answer = `${answer}\n\n${pickVariant(allowLatin ? SHARE_REQUESTS_EN : SHARE_REQUESTS)}`;
+  }
+
   messages.push({ role: 'assistant', content: answer });
   await saveConversation(senderId, messages);
 
   return answer;
+}
+
+// ---- Check-ins (see checkIns.ts) ----
+
+// Only people who actually talked with her get a check-in, not someone
+// who sent a single "سلام".
+const MIN_USER_TURNS_FOR_CHECK_IN = 3;
+
+const CHECK_IN_NOTE = 'It has been about a day since this person last wrote to you. Write ONE short, warm message (one or two sentences) to check on them, like a friend would. If something from your last conversation fits — something they were worried about, planning, or going through — ask how it went. Do not say how long it has been, do not ask them to share anything, and do not add [[SHARE]] or [[BLOCK]].';
+const CHECK_IN_CRISIS_NOTE = 'They were going through something very hard last time. Gently ask how they are feeling today.';
+
+const CHECK_IN_FALLBACKS = [
+  'سلام جان، امروز چطوری؟ 🌸',
+  'سلام، یادت کردم. حالت خوب است؟ 🙂',
+];
+const CHECK_IN_FALLBACKS_EN = [
+  'Hi, how are you today? 🌸',
+];
+
+/**
+ * Writes a check-in for someone who went quiet, based on their earlier
+ * conversation. Returns null for blocked users and very short chats. Not
+ * saved to the history here: the caller saves it with saveCheckInMessage
+ * only once Messenger has accepted it.
+ */
+export async function createCheckInMessage(senderId: string): Promise<string | null> {
+  const moderationStatus = await getModerationStatus(senderId);
+  if (moderationStatus.blocked) return null;
+
+  const messages = await getConversation(senderId);
+  const userMessages = messages.filter((message) => message.role === 'user');
+  if (userMessages.length < MIN_USER_TURNS_FOR_CHECK_IN) return null;
+
+  const summary = await getSummary(senderId);
+  const crisis = await isInCrisisMode(senderId);
+  const allowLatin = wantsEnglishMode(userMessages[userMessages.length - 1]?.content || '');
+  const fallbacks = allowLatin ? CHECK_IN_FALLBACKS_EN : CHECK_IN_FALLBACKS;
+
+  const completion = await createChatCompletion({
+    messages: [
+      ...buildModelMessages(messages, summary, crisis),
+      { role: 'system', content: crisis ? `${CHECK_IN_NOTE} ${CHECK_IN_CRISIS_NOTE}` : CHECK_IN_NOTE },
+    ],
+    temperature: 0.7,
+    max_tokens: crisis ? 300 : 180,
+  }).catch(() => null);
+
+  const content = completion?.choices?.[0]?.message?.content;
+  let text = typeof content === 'string' && !MODEL_BLOCK_MARKER.test(content)
+    ? toReplyText(content.replace(SHARE_MARKER, ''))
+    : '';
+
+  if (!isNaturalReply(text, allowLatin) || revealsAIIdentity(text)) {
+    text = pickVariant(fallbacks, getLastAssistantMessage(messages)) || fallbacks[0]!;
+  }
+
+  return limitLength(text);
+}
+
+export async function saveCheckInMessage(senderId: string, text: string): Promise<void> {
+  const messages = await getConversation(senderId);
+  messages.push({ role: 'assistant', content: text });
+  await saveConversation(senderId, messages);
 }
 
 const PHOTO_CAPTIONS = [

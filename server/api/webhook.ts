@@ -3,6 +3,7 @@ import { sendMessengerImage, sendMessengerReply, sendTypingAction } from "../uti
 import { extractCommentEvent, sendFacebookCommentReply } from "../utils/facebookComments"
 import { getAIResponse, getErrorStatus, getPhotoReply, isCannedReply, setErrorStatus } from "../utils/chatMemory"
 import { mentionsSuicideOrSelfHarm } from "../utils/crisis"
+import { recordActivity } from "../utils/checkIns"
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -41,6 +42,10 @@ export default defineEventHandler(async (event) => {
 
         // Mark as processed (Redis via Upstash)
         await storage.setItem(processedKey, true)
+
+        // Remember when they last wrote, for the next-day check-in.
+        // Never worth failing the reply over.
+        await recordActivity(sender).catch((err) => console.error("Activity record error:", err?.message))
 
         // Check if user is in "Error Cooldown" -- except for talk of
         // suicide or self-harm, which is never left unanswered
