@@ -14,11 +14,15 @@
 //                 looking for a way forward
 //   poem        - a folk poem from the poem library
 //
-// Every post except opportunities (which show the listing's link preview)
-// goes out as a photo: Claude describes a scene of Hazara life (Dasht-e-
-// Barchi, mud-brick villages, families in Hazara clothes) that fits the post,
-// Pollinations draws it, and the picture is uploaded with the post as its
-// caption. If the picture fails, the post goes out as text.
+// With POST_IMAGES_ENABLED=true, every post except opportunities (which
+// show the listing's link preview) goes out as a photo: Claude describes a
+// scene of Hazara life (Dasht-e-Barchi, mud-brick villages, families in
+// Hazara clothes) that fits the post, Pollinations' MAI 2.6 draws it,
+// Claude checks it looks real and Hazara, and it is uploaded with the post
+// as its caption. Off by default: MAI costs ~$0.04 a picture, beyond the
+// free Pollinations allowance, and the free models don't draw Hazara faces
+// (the owner would rather post text than a poor picture). Any failure
+// means a text post.
 //
 // Research reads those sites' public RSS feeds. Search-page scraping
 // (DuckDuckGo) gets flagged as a bot and returns nothing.
@@ -35,7 +39,7 @@
 // page restricted. Growth comes from posts worth sharing, comment
 // replies, and the share request happy chats already get.
 
-import { createChatCompletion } from './aiGateway';
+import { askAboutImage, createChatCompletion } from './aiGateway';
 import { isPublishableDari } from './chatMemory';
 import { POEM_LIBRARY } from './poemLibrary';
 
@@ -285,17 +289,35 @@ function draftPoem(recentPoems: string[]): Draft | null {
 }
 
 // The page's readers are mostly Hazara, so the pictures show Hazara life:
-// Kabul's Dasht-e-Barchi, central Afghanistan, Hazara clothes and culture,
-// families and people. One limit: never a young woman or girl on her own
-// or in close-up -- people would take her for Sitara herself.
-const IMAGE_PROMPT_INSTRUCTION = `Describe, in English and in at most 35 words, one warm, realistic photograph of Hazara life that fits the mood of the Facebook post below. Choose from: daily life in Dasht-e-Barchi, Kabul; Hazara villages and old mud-brick houses in central Afghanistan; the mountains and valleys of Bamyan; families, children, elders, men, and women together in traditional Hazara clothes and embroidery; tea and bread at home; Nowruz and other celebrations; orchards and wheat fields. People are welcome, but never show a young woman or girl alone or in close-up: women appear only within families or groups, seen from a distance. Peaceful everyday scenes only. No writing, letters, or signs. Reply with the description only.`;
+// Kabul's Dasht-e-Barchi, central Afghanistan, Hazara clothes and culture.
+// No visible faces: people appear only from behind or far away, so nobody
+// takes a face for Sitara herself (and models draw Hazara faces badly).
+const IMAGE_PROMPT_INSTRUCTION = `Describe, in English and in at most 40 words, one warm, candid documentary photograph of Hazara life that fits the mood of the Facebook post below. Choose from: daily life in Dasht-e-Barchi, Kabul; Hazara villages and old mud-brick houses in central Afghanistan; the mountains and valleys of Bamyan; families, children, elders, and men in traditional Hazara clothes, caps, and embroidery; tea and naan at home; Nowruz and other celebrations; orchards and wheat fields. No faces may be visible: people are seen only from behind, or far away, facing away from the camera. Never a young woman or girl on her own. Peaceful everyday scenes only. No writing, letters, or signs. Reply with the description only.`;
 
 // Repeated here because image models often ignore an instruction given
-// only once.
-const IMAGE_PROMPT_SUFFIX = ', Hazara people of Afghanistan, realistic documentary photograph, natural light, no text';
+// only once. The photo terms keep it from looking like a glossy AI image.
+const IMAGE_PROMPT_SUFFIX = ', Afghanistan, people seen from behind with faces turned away, no visible faces, candid documentary photograph, shot on 35mm film, natural light, slight grain, unposed, no text';
 
-const IMAGE_SIZE = 1080;
-const IMAGE_TIMEOUT_MS = 60000;
+// MAI 2.6 is the only model tried that draws Hazara faces and looks like a
+// real photo (~35-45s per picture). There's no cheaper fallback model: the
+// owner would rather post without a picture than with a poor one.
+// POLLINATIONS_IMAGE_MODEL overrides it.
+const IMAGE_MODEL = 'microsoft/mai-image-2.6';
+const IMAGE_TIMEOUT_MS = 90000;
+
+const IMAGE_REVIEW_PROMPT = `This picture would go with the Facebook post below, on a page read mostly by Hazara Afghans. Answer YES only if all of these hold, otherwise NO:
+- It looks like a real photograph, not an AI image: no warped bodies, hands, or extra fingers, no garbled letters, no plastic look, no watermark.
+- No face is visible: any people are seen from behind or far away.
+- People, clothes, and the place look like Afghanistan (Kabul, Dasht-e-Barchi, or Hazara villages and mountains).
+- It fits the post.
+- It does not show a young woman or girl on her own.
+Reply with YES or NO only.
+
+Post:
+`;
+
+// MAI needs sides in multiples of 16 and Flux in multiples of 32.
+const IMAGE_SIZE = 1088;
 
 async function writeImagePrompt(message: string): Promise<string | null> {
   const completion = await createChatCompletion({
@@ -303,21 +325,23 @@ async function writeImagePrompt(message: string): Promise<string | null> {
       { role: 'system', content: IMAGE_PROMPT_INSTRUCTION },
       { role: 'user', content: message },
     ],
-    max_tokens: 80,
+    max_tokens: 100,
   }).catch((err) => {
     console.error('Image prompt error:', err?.message);
     return null;
   });
 
   const content = completion?.choices?.[0]?.message?.content?.replace(/["\n]+/g, ' ').trim();
-  return content ? content.slice(0, 300) : null;
+  return content ? content.slice(0, 400) : null;
 }
 
 // Downloaded here and uploaded as a file (rather than handing Facebook the
 // URL) because the Pollinations key goes in a header Facebook can't send.
-export async function fetchPostImage(prompt: string): Promise<Blob | null> {
+async function drawImage(prompt: string): Promise<Blob | null> {
+  const model = process.env.POLLINATIONS_IMAGE_MODEL || IMAGE_MODEL;
   const base = (process.env.POLLINATIONS_GENERATION_URL || 'https://gen.pollinations.ai').replace(/\/$/, '');
   const url = new URL(`${base}/image/${encodeURIComponent(prompt + IMAGE_PROMPT_SUFFIX)}`);
+  url.searchParams.set('model', model);
   url.searchParams.set('width', String(IMAGE_SIZE));
   url.searchParams.set('height', String(IMAGE_SIZE));
   url.searchParams.set('nologo', 'true');
@@ -331,15 +355,41 @@ export async function fetchPostImage(prompt: string): Promise<Blob | null> {
     });
     const type = response.headers.get('content-type') || '';
     if (!response.ok || !type.startsWith('image/')) {
-      console.error('Post image error:', response.status, type);
+      console.error('Post image error:', model, response.status, (await response.text().catch(() => '')).slice(0, 200));
       return null;
     }
     const image = await response.blob();
     return image.size > 10000 ? image : null;
   } catch (err: any) {
-    console.error('Post image error:', err?.message);
+    console.error('Post image error:', model, err?.message);
     return null;
   }
+}
+
+async function drawReviewedImage(prompt: string, message: string): Promise<Blob | null> {
+  const image = await drawImage(prompt);
+  if (!image) return null;
+
+  const answer = await askAboutImage(image, IMAGE_REVIEW_PROMPT + message);
+  if (!answer?.trim().toUpperCase().startsWith('YES')) {
+    console.warn('Post image rejected on review:', answer, '|', prompt);
+    return null;
+  }
+  return image;
+}
+
+// About half the pictures fail Claude's look, so two are drawn at once
+// (same wait, twice the pollen) and the first that passes is used. If
+// neither passes, the post goes out as text.
+const IMAGE_CANDIDATES = 2;
+
+export async function fetchPostImage(prompt: string, message: string): Promise<Blob | null> {
+  const candidates = Array.from({ length: IMAGE_CANDIDATES }, () => drawReviewedImage(prompt, message));
+  return Promise.any(candidates.map(async (candidate) => {
+    const image = await candidate;
+    if (!image) throw new Error('no picture');
+    return image;
+  })).catch(() => null);
 }
 
 async function publishPagePost(draft: Draft): Promise<string> {
@@ -347,7 +397,7 @@ async function publishPagePost(draft: Draft): Promise<string> {
   const token = config.FACEBOOK_PAGE_TOKEN;
   if (!token) throw new Error('FACEBOOK_PAGE_TOKEN is missing');
 
-  const image = draft.imagePrompt ? await fetchPostImage(draft.imagePrompt) : null;
+  const image = draft.imagePrompt ? await fetchPostImage(draft.imagePrompt, draft.message) : null;
   if (image) {
     const form = new FormData();
     form.append('source', image, 'post.jpg');
@@ -398,7 +448,9 @@ export async function runPagePost(options: { dryRun?: boolean; force?: boolean; 
     draftPoem(recentPoems);
 
   if (!draft) return { status: 'skipped', reason: 'no usable draft' };
-  if (!draft.link) draft.imagePrompt = (await writeImagePrompt(draft.message)) || undefined;
+  if (process.env.POST_IMAGES_ENABLED === 'true' && !draft.link) {
+    draft.imagePrompt = (await writeImagePrompt(draft.message)) || undefined;
+  }
   if (dryRun) return { status: 'draft', draft };
 
   // Claimed before posting so overlapping runs never post twice.

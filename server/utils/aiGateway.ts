@@ -192,3 +192,30 @@ export async function createChatCompletion(options: CompletionOptions): Promise<
     return await createGatewayCompletion(options);
   }
 }
+
+// Claude looks at a picture and answers a question about it (used to check
+// page post pictures before they go out). No gateway fallback: null means
+// "couldn't check", which callers treat as "don't use the picture".
+export async function askAboutImage(image: Blob, question: string): Promise<string | null> {
+  const mediaType = image.type === 'image/png' ? 'image/png' : image.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+  try {
+    const data = Buffer.from(await image.arrayBuffer()).toString('base64');
+    const response = await getClient().messages.create({
+      model: process.env.ANTHROPIC_MODEL || DEFAULT_MODEL,
+      max_tokens: 2048,
+      output_config: { effort: 'low' },
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+          { type: 'text', text: question },
+        ],
+      }],
+    });
+    if (response.stop_reason === 'refusal') return null;
+    return response.content.map((block) => (block.type === 'text' ? block.text : '')).join('').trim();
+  } catch (err: any) {
+    console.error('Image review error:', err?.status || '', err?.message);
+    return null;
+  }
+}
