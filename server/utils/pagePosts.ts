@@ -14,15 +14,12 @@
 //                 looking for a way forward
 //   poem        - a folk poem from the poem library
 //
-// With POST_IMAGES_ENABLED=true, every post except opportunities (which
-// show the listing's link preview) goes out as a photo: Claude describes a
-// scene of Hazara life (Dasht-e-Barchi, mud-brick villages, families in
-// Hazara clothes) that fits the post, Pollinations' MAI 2.6 draws it,
-// Claude checks it looks real and Hazara, and it is uploaded with the post
-// as its caption. Off by default: MAI costs ~$0.04 a picture, beyond the
-// free Pollinations allowance, and the free models don't draw Hazara faces
-// (the owner would rather post text than a poor picture). Any failure
-// means a text post.
+// Every post except opportunities (which show the listing's link preview)
+// goes out with a picture: a book on a table whose cover carries the
+// post's title, drawn by postCover.ts in a random style. Claude writes the
+// title (poems use their own). No people, animals, or AI image models --
+// those cost money, and the owner would rather post text than a poor
+// picture. If the cover can't be made, the post goes out as text.
 //
 // Research reads those sites' public RSS feeds. Search-page scraping
 // (DuckDuckGo) gets flagged as a bot and returns nothing.
@@ -39,9 +36,10 @@
 // page restricted. Growth comes from posts worth sharing, comment
 // replies, and the share request happy chats already get.
 
-import { askAboutImage, createChatCompletion } from './aiGateway';
+import { createChatCompletion } from './aiGateway';
 import { isPublishableDari } from './chatMemory';
 import { POEM_LIBRARY } from './poemLibrary';
+import { renderCover, type CoverKind } from './postCover';
 
 export type PostKind = 'tip' | 'question' | 'opportunity' | 'poem';
 
@@ -110,8 +108,8 @@ type Draft = {
   // Article the post was based on, so it isn't used twice.
   source?: string;
   theme?: string;
-  // English description of the picture to post with it.
-  imagePrompt?: string;
+  // Title for the book cover posted with it.
+  coverTitle?: string;
 };
 
 export type PagePostResult =
@@ -288,114 +286,39 @@ function draftPoem(recentPoems: string[]): Draft | null {
   return { kind: 'poem', message: `${intro}\n\n${lines.join('\n')}`, theme: poem.title };
 }
 
-// The page's readers are mostly Hazara, so the pictures show Hazara life:
-// Kabul's Dasht-e-Barchi, central Afghanistan, Hazara clothes and culture.
-// No visible faces: people appear only from behind or far away, so nobody
-// takes a face for Sitara herself (and models draw Hazara faces badly).
-const IMAGE_PROMPT_INSTRUCTION = `Describe, in English and in at most 40 words, one warm, candid documentary photograph of Hazara life that fits the mood of the Facebook post below. Choose from: daily life in Dasht-e-Barchi, Kabul; Hazara villages and old mud-brick houses in central Afghanistan; the mountains and valleys of Bamyan; families, children, elders, and men in traditional Hazara clothes, caps, and embroidery; tea and naan at home; Nowruz and other celebrations; orchards and wheat fields. No faces may be visible: people are seen only from behind, or far away, facing away from the camera. Never a young woman or girl on her own. Peaceful everyday scenes only. No writing, letters, or signs. Reply with the description only.`;
+const COVER_TITLE_PROMPT = `Write a title for the Facebook post below, as it would appear on a book cover: two to five words in Kabuli Dari (with the Hazaragi words a Hazara would use), Persian script only. It should make people want to read the post. No quotation marks, emoji, or punctuation other than a question mark. Reply with the title only.`;
 
-// Repeated here because image models often ignore an instruction given
-// only once. The photo terms keep it from looking like a glossy AI image.
-const IMAGE_PROMPT_SUFFIX = ', Afghanistan, people seen from behind with faces turned away, no visible faces, candid documentary photograph, shot on 35mm film, natural light, slight grain, unposed, no text';
+const MAX_COVER_TITLE_CHARS = 40;
 
-// MAI 2.6 is the only model tried that draws Hazara faces and looks like a
-// real photo (~35-45s per picture). There's no cheaper fallback model: the
-// owner would rather post without a picture than with a poor one. The
-// model and service are fixed on purpose (no env override), so a config
-// change can't swap in a weaker one.
-const IMAGE_MODEL = 'microsoft/mai-image-2.6';
-const IMAGE_SERVICE_URL = 'https://gen.pollinations.ai';
-
-// MAI's pictures are 250-350KB; much smaller means a broken or
-// low-detail picture.
-const MIN_IMAGE_BYTES = 100000;
-const IMAGE_TIMEOUT_MS = 90000;
-
-const IMAGE_REVIEW_PROMPT = `This picture would go with the Facebook post below, on a page read mostly by Hazara Afghans. Answer YES only if all of these hold, otherwise NO:
-- It looks like a real, good-quality photograph, not an AI image: sharp and well composed, not blurry or dark, no warped bodies, hands, or extra fingers, no garbled letters, no plastic look, no watermark or logo.
-- Nothing in it is odd or out of place. If you have any doubt, answer NO.
-- No face is visible: any people are seen from behind or far away.
-- People, clothes, and the place look like Afghanistan (Kabul, Dasht-e-Barchi, or Hazara villages and mountains).
-- It fits the post.
-- It does not show a young woman or girl on her own.
-Reply with YES or NO only.
-
-Post:
-`;
-
-// MAI needs sides in multiples of 16 and Flux in multiples of 32.
-const IMAGE_SIZE = 1088;
-
-async function writeImagePrompt(message: string): Promise<string | null> {
+async function writeCoverTitle(message: string): Promise<string | null> {
   const completion = await createChatCompletion({
     messages: [
-      { role: 'system', content: IMAGE_PROMPT_INSTRUCTION },
+      { role: 'system', content: COVER_TITLE_PROMPT },
       { role: 'user', content: message },
     ],
-    max_tokens: 100,
+    max_tokens: 40,
   }).catch((err) => {
-    console.error('Image prompt error:', err?.message);
+    console.error('Cover title error:', err?.message);
     return null;
   });
 
-  const content = completion?.choices?.[0]?.message?.content?.replace(/["\n]+/g, ' ').trim();
-  return content ? content.slice(0, 400) : null;
+  const title = completion?.choices?.[0]?.message?.content?.replace(/["«»\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return title && title.length <= MAX_COVER_TITLE_CHARS && isPublishableDari(title) ? title : null;
 }
 
-// Downloaded here and uploaded as a file (rather than handing Facebook the
-// URL) because the Pollinations key goes in a header Facebook can't send.
-async function drawImage(prompt: string): Promise<Blob | null> {
-  const model = IMAGE_MODEL;
-  const url = new URL(`${IMAGE_SERVICE_URL}/image/${encodeURIComponent(prompt + IMAGE_PROMPT_SUFFIX)}`);
-  url.searchParams.set('model', model);
-  url.searchParams.set('width', String(IMAGE_SIZE));
-  url.searchParams.set('height', String(IMAGE_SIZE));
-  url.searchParams.set('nologo', 'true');
-  url.searchParams.set('seed', String(Math.floor(Math.random() * 1e9)));
+function coverKind(kind: PostKind): CoverKind | null {
+  return kind === 'opportunity' ? null : kind;
+}
 
-  const apiKey = process.env.POLLINATIONS_API_KEY;
-  try {
-    const response = await fetch(url, {
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-      signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
-    });
-    const type = response.headers.get('content-type') || '';
-    if (!response.ok || !type.startsWith('image/')) {
-      console.error('Post image error:', model, response.status, (await response.text().catch(() => '')).slice(0, 200));
-      return null;
-    }
-    const image = await response.blob();
-    return image.size >= MIN_IMAGE_BYTES ? image : null;
-  } catch (err: any) {
-    console.error('Post image error:', model, err?.message);
+// The cover picture for a draft, or null for opportunities, a missing
+// title, or a render failure (the post then goes out as text).
+export async function renderDraftCover(draft: Draft): Promise<Buffer | null> {
+  const cover = coverKind(draft.kind);
+  if (!cover || !draft.coverTitle) return null;
+  return renderCover(cover, draft.coverTitle).catch((err) => {
+    console.error('Cover error:', err?.message);
     return null;
-  }
-}
-
-async function drawReviewedImage(prompt: string, message: string): Promise<Blob | null> {
-  const image = await drawImage(prompt);
-  if (!image) return null;
-
-  const answer = await askAboutImage(image, IMAGE_REVIEW_PROMPT + message);
-  if (!answer?.trim().toUpperCase().startsWith('YES')) {
-    console.warn('Post image rejected on review:', answer, '|', prompt);
-    return null;
-  }
-  return image;
-}
-
-// About half the pictures fail Claude's look, so two are drawn at once
-// (same wait, twice the pollen) and the first that passes is used. If
-// neither passes, the post goes out as text.
-const IMAGE_CANDIDATES = 2;
-
-export async function fetchPostImage(prompt: string, message: string): Promise<Blob | null> {
-  const candidates = Array.from({ length: IMAGE_CANDIDATES }, () => drawReviewedImage(prompt, message));
-  return Promise.any(candidates.map(async (candidate) => {
-    const image = await candidate;
-    if (!image) throw new Error('no picture');
-    return image;
-  })).catch(() => null);
+  });
 }
 
 async function publishPagePost(draft: Draft): Promise<string> {
@@ -403,10 +326,10 @@ async function publishPagePost(draft: Draft): Promise<string> {
   const token = config.FACEBOOK_PAGE_TOKEN;
   if (!token) throw new Error('FACEBOOK_PAGE_TOKEN is missing');
 
-  const image = draft.imagePrompt ? await fetchPostImage(draft.imagePrompt, draft.message) : null;
+  const image = await renderDraftCover(draft);
   if (image) {
     const form = new FormData();
-    form.append('source', image, 'post.jpg');
+    form.append('source', new Blob([new Uint8Array(image)], { type: 'image/png' }), 'post.png');
     form.append('caption', draft.message);
     form.append('access_token', token);
     // post_id is the feed post (pageid_postid) that comment webhooks name.
@@ -454,8 +377,8 @@ export async function runPagePost(options: { dryRun?: boolean; force?: boolean; 
     draftPoem(recentPoems);
 
   if (!draft) return { status: 'skipped', reason: 'no usable draft' };
-  if (process.env.POST_IMAGES_ENABLED === 'true' && !draft.link) {
-    draft.imagePrompt = (await writeImagePrompt(draft.message)) || undefined;
+  if (coverKind(draft.kind)) {
+    draft.coverTitle = draft.kind === 'poem' ? draft.theme : (await writeCoverTitle(draft.message)) || undefined;
   }
   if (dryRun) return { status: 'draft', draft };
 
