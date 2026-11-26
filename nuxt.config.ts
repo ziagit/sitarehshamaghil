@@ -8,6 +8,8 @@ export default defineNuxtConfig({
   runtimeConfig: {
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
     FACEBOOK_PAGE_TOKEN: process.env.FACEBOOK_PAGE_TOKEN,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
     AI_GATEWAY_URL: process.env.AI_GATEWAY_URL,
     AI_GATEWAY_API_KEY: process.env.AI_GATEWAY_API_KEY,
     AI_GATEWAY_MODEL: process.env.AI_GATEWAY_MODEL,

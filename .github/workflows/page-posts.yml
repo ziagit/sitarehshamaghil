@@ -1,0 +1,26 @@
+# Asks the site to write and publish one page post (see
+# server/utils/pagePosts.ts) once a day, at 20:00 Kabul time, when most
+# people are online.
+# Uses the same SITARA_URL and CHECKIN_SECRET secrets as check-ins.yml.
+# Posts are only published once AUTO_POST_ENABLED=true is set on the site.
+name: Sitara page posts
+
+on:
+  schedule:
+    - cron: "30 15 * * *"
+  workflow_dispatch:
+
+jobs:
+  page-post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish a page post
+        env:
+          SITARA_URL: ${{ secrets.SITARA_URL }}
+          CHECKIN_SECRET: ${{ secrets.CHECKIN_SECRET }}
+        run: |
+          if [ -z "$SITARA_URL" ] || [ -z "$CHECKIN_SECRET" ]; then
+            echo "SITARA_URL or CHECKIN_SECRET secret is not set; skipping."
+            exit 0
+          fi
+          curl -fsS -X POST "$SITARA_URL/api/page-posts" -H "Authorization: Bearer $CHECKIN_SECRET"

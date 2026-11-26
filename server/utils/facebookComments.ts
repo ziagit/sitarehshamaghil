@@ -93,3 +93,14 @@ export async function sendFacebookCommentReply({ commentId, message }: FacebookC
     timeout: 10000,
   });
 }
+
+// A like shows the person they were seen, even when no reply is posted
+// (canned and moderation replies are skipped). Needs pages_manage_engagement.
+export async function likeFacebookComment(commentId: string) {
+  const config = useRuntimeConfig();
+  return await $fetch(`https://graph.facebook.com/v19.0/${commentId}/likes`, {
+    method: 'POST',
+    body: { access_token: config.FACEBOOK_PAGE_TOKEN },
+    timeout: 10000,
+  });
+}

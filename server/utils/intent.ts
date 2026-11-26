@@ -40,12 +40,8 @@ async function classify(userMessage: string, lastAssistant?: string): Promise<In
         { role: 'system', content: INTENT_PROMPT },
         { role: 'user', content: `${context}User's latest message: ${userMessage}` },
       ],
-      temperature: 0,
-      // The answer itself is one word, but when gemini is rate limited the
-      // gateway switches to groq's gpt-oss, a reasoning model that
-      // spends ~100 tokens thinking first and returns empty content if it
-      // runs out.
-      max_tokens: 300,
+      // The answer itself is one word.
+      max_tokens: 20,
     });
 
     const answer = completion.choices?.[0]?.message?.content?.trim().toLowerCase() || '';

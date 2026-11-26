@@ -1,6 +1,7 @@
 // server/api/webhook.ts
 import { sendMessengerImage, sendMessengerReply, sendTypingAction } from "../utils/messenger"
-import { extractCommentEvent, sendFacebookCommentReply } from "../utils/facebookComments"
+import { extractCommentEvent, likeFacebookComment, sendFacebookCommentReply } from "../utils/facebookComments"
+import { getPostText } from "../utils/pagePosts"
 import { getAIResponse, getErrorStatus, getPhotoReply, isCannedReply, setErrorStatus } from "../utils/chatMemory"
 import { mentionsSuicideOrSelfHarm } from "../utils/crisis"
 import { recordActivity } from "../utils/checkIns"
@@ -86,8 +87,16 @@ export default defineEventHandler(async (event) => {
 
         await storage.setItem(processedKey, true)
 
+        await likeFacebookComment(commentEvent.commentId)
+          .catch((err) => console.error("Comment like error:", err?.data || err?.message))
+
+        const postText = commentEvent.postId ? await getPostText(commentEvent.postId) : null
+        const commentNote = postText
+          ? `This message is a public comment under this post on your page:\n«${postText.slice(0, 500)}»\nReply publicly in one short, friendly sentence that fits both the comment and the post. Never ask for private details in public.`
+          : "This message is a public comment on your page. Reply publicly in one short, friendly sentence. Never ask for private details in public."
+
         const senderKey = `comment:${commentEvent.authorId || commentEvent.commentId}`
-        const replyText = await getAIResponse(senderKey, commentEvent.message)
+        const replyText = await getAIResponse(senderKey, commentEvent.message, [commentNote])
 
         // Canned fallbacks ("busy, ask again") and moderation lines
         // ("you weren't polite") shouldn't be posted publicly under a post.

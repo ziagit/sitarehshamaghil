@@ -453,8 +453,9 @@ function containsPashtoMarkers(text: string, allowLatin = false) {
 // free to leak Thai, Cyrillic, Chinese, etc. under prompt pressure
 // (observed in production: "راถามید", "різні", "зрозумندى").
 // Allowed: Arabic/Persian script blocks, digits (Latin + Arabic-Indic +
-// extended Arabic-Indic), whitespace, common punctuation, and emoji.
-const ALLOWED_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\u200D\s0-9٠-٩۰-۹.,!?؟،؛:()\-"'%\u2600-\u27BF\u{1F300}-\u{1FAFF}]/gu;
+// extended Arabic-Indic), whitespace, common punctuation (including the
+// «» quotes, dashes and … that Dari text uses), and emoji.
+const ALLOWED_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\u200D\s0-9٠-٩۰-۹.,!?؟،؛:()\-"'%«»–—…\u2600-\u27BF\u{1F300}-\u{1FAFF}]/gu;
 
 function containsForeignScript(text: string) {
   return text.replace(ALLOWED_CHARS, '').length > 0;
@@ -525,6 +526,12 @@ const CANNED_REPLIES = new Set([
 
 export function isCannedReply(text: string) {
   return CANNED_REPLIES.has(text);
+}
+
+// Same bar as a chat reply, for text posted publicly on the page (see
+// pagePosts.ts): Dari script only and no hint of being an AI.
+export function isPublishableDari(text: string) {
+  return isNaturalReply(text) && !revealsAIIdentity(text);
 }
 
 function buildModelMessages(messages: Message[], summary?: string, crisis = false, notes: string[] = []): ChatCompletionMessageParam[] {
@@ -611,7 +618,7 @@ async function saveSummary(senderId: string, summary: string): Promise<void> {
 
 // Best-effort: on any failure this returns the existing summary unchanged
 // rather than throwing. saveConversation's caller has no try/catch of its
-// own here, so an AI gateway hiccup in this path must never turn into a lost
+// own here, so a model API hiccup in this path must never turn into a lost
 // reply for the user.
 async function updateSummary(existingSummary: string, batchMessages: Message[]): Promise<string> {
   const transcript = batchMessages
@@ -630,7 +637,6 @@ async function updateSummary(existingSummary: string, batchMessages: Message[]):
           content: `خلاصه فعلی:\n${existingSummary || '(هنوز خلاصه‌ای نیست)'}\n\nگفتگوی جدید که باید در خلاصه گنجانده شود:\n${transcript}`,
         },
       ],
-      temperature: 0.2,
       max_tokens: 220,
     });
 
@@ -719,9 +725,11 @@ function limitLength(text: string) {
 }
 
 /**
- * Main AI function using the AI gateway
+ * Main AI function (Claude, see aiGateway.ts)
  */
-export async function getAIResponse(senderId: string, userMessage: string): Promise<string> {
+// notes: extra system notes for this reply only, e.g. the page post a
+// comment was written under.
+export async function getAIResponse(senderId: string, userMessage: string, notes: string[] = []): Promise<string> {
   // Talk of suicide or self-harm always gets a caring reply: it skips the
   // moderation block and keyword list (someone describing abuse may use
   // those words), and keeps the user in crisis mode for the next turns.
@@ -787,11 +795,10 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
 
   // Crisis replies may run to four sentences.
   const maxTokens = crisis ? 300 : 180;
-  const replyNotes = justForgiven ? [FORGIVEN_NOTE] : [];
+  const replyNotes = [...notes, ...(justForgiven ? [FORGIVEN_NOTE] : [])];
 
   const completion = await createChatCompletion({
     messages: buildModelMessages(messages, summary, crisis, replyNotes),
-    temperature: 0.55,
     max_tokens: maxTokens,
   }).catch((err) => {
     // In crisis mode any failure gets the fixed caring reply below rather
@@ -820,7 +827,6 @@ export async function getAIResponse(senderId: string, userMessage: string): Prom
         ...buildModelMessages(messages, summary, crisis, replyNotes),
         { role: 'system', content: nudge },
       ],
-      temperature: 0.7,
       max_tokens: maxTokens,
     }).catch(() => null);
     const content = retry?.choices?.[0]?.message?.content;
@@ -920,7 +926,6 @@ export async function createCheckInMessage(senderId: string): Promise<string | n
       ...buildModelMessages(messages, summary, crisis),
       { role: 'system', content: crisis ? `${CHECK_IN_NOTE} ${CHECK_IN_CRISIS_NOTE}` : CHECK_IN_NOTE },
     ],
-    temperature: 0.7,
     max_tokens: crisis ? 300 : 180,
   }).catch(() => null);
 
