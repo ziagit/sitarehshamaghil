@@ -14,6 +14,12 @@
 //                 looking for a way forward
 //   poem        - a folk poem from the poem library
 //
+// Every post except opportunities (which show the listing's link preview)
+// goes out as a photo: Claude describes a scene of Hazara life (Dasht-e-
+// Barchi, mud-brick villages, families in Hazara clothes) that fits the post,
+// Pollinations draws it, and the picture is uploaded with the post as its
+// caption. If the picture fails, the post goes out as text.
+//
 // Research reads those sites' public RSS feeds. Search-page scraping
 // (DuckDuckGo) gets flagged as a bot and returns nothing.
 //
@@ -100,6 +106,8 @@ type Draft = {
   // Article the post was based on, so it isn't used twice.
   source?: string;
   theme?: string;
+  // English description of the picture to post with it.
+  imagePrompt?: string;
 };
 
 export type PagePostResult =
@@ -276,14 +284,87 @@ function draftPoem(recentPoems: string[]): Draft | null {
   return { kind: 'poem', message: `${intro}\n\n${lines.join('\n')}`, theme: poem.title };
 }
 
-async function publishPagePost(message: string, link?: string): Promise<string> {
+// The page's readers are mostly Hazara, so the pictures show Hazara life:
+// Kabul's Dasht-e-Barchi, central Afghanistan, Hazara clothes and culture,
+// families and people. One limit: never a young woman or girl on her own
+// or in close-up -- people would take her for Sitara herself.
+const IMAGE_PROMPT_INSTRUCTION = `Describe, in English and in at most 35 words, one warm, realistic photograph of Hazara life that fits the mood of the Facebook post below. Choose from: daily life in Dasht-e-Barchi, Kabul; Hazara villages and old mud-brick houses in central Afghanistan; the mountains and valleys of Bamyan; families, children, elders, men, and women together in traditional Hazara clothes and embroidery; tea and bread at home; Nowruz and other celebrations; orchards and wheat fields. People are welcome, but never show a young woman or girl alone or in close-up: women appear only within families or groups, seen from a distance. Peaceful everyday scenes only. No writing, letters, or signs. Reply with the description only.`;
+
+// Repeated here because image models often ignore an instruction given
+// only once.
+const IMAGE_PROMPT_SUFFIX = ', Hazara people of Afghanistan, realistic documentary photograph, natural light, no text';
+
+const IMAGE_SIZE = 1080;
+const IMAGE_TIMEOUT_MS = 60000;
+
+async function writeImagePrompt(message: string): Promise<string | null> {
+  const completion = await createChatCompletion({
+    messages: [
+      { role: 'system', content: IMAGE_PROMPT_INSTRUCTION },
+      { role: 'user', content: message },
+    ],
+    max_tokens: 80,
+  }).catch((err) => {
+    console.error('Image prompt error:', err?.message);
+    return null;
+  });
+
+  const content = completion?.choices?.[0]?.message?.content?.replace(/["\n]+/g, ' ').trim();
+  return content ? content.slice(0, 300) : null;
+}
+
+// Downloaded here and uploaded as a file (rather than handing Facebook the
+// URL) because the Pollinations key goes in a header Facebook can't send.
+export async function fetchPostImage(prompt: string): Promise<Blob | null> {
+  const base = (process.env.POLLINATIONS_GENERATION_URL || 'https://gen.pollinations.ai').replace(/\/$/, '');
+  const url = new URL(`${base}/image/${encodeURIComponent(prompt + IMAGE_PROMPT_SUFFIX)}`);
+  url.searchParams.set('width', String(IMAGE_SIZE));
+  url.searchParams.set('height', String(IMAGE_SIZE));
+  url.searchParams.set('nologo', 'true');
+  url.searchParams.set('seed', String(Math.floor(Math.random() * 1e9)));
+
+  const apiKey = process.env.POLLINATIONS_API_KEY;
+  try {
+    const response = await fetch(url, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
+    });
+    const type = response.headers.get('content-type') || '';
+    if (!response.ok || !type.startsWith('image/')) {
+      console.error('Post image error:', response.status, type);
+      return null;
+    }
+    const image = await response.blob();
+    return image.size > 10000 ? image : null;
+  } catch (err: any) {
+    console.error('Post image error:', err?.message);
+    return null;
+  }
+}
+
+async function publishPagePost(draft: Draft): Promise<string> {
   const config = useRuntimeConfig();
   const token = config.FACEBOOK_PAGE_TOKEN;
   if (!token) throw new Error('FACEBOOK_PAGE_TOKEN is missing');
 
+  const image = draft.imagePrompt ? await fetchPostImage(draft.imagePrompt) : null;
+  if (image) {
+    const form = new FormData();
+    form.append('source', image, 'post.jpg');
+    form.append('caption', draft.message);
+    form.append('access_token', token);
+    // post_id is the feed post (pageid_postid) that comment webhooks name.
+    const response = await $fetch<{ id: string; post_id?: string }>('https://graph.facebook.com/v19.0/me/photos', {
+      method: 'POST',
+      body: form,
+      timeout: 60000,
+    });
+    return response.post_id || response.id;
+  }
+
   const response = await $fetch<{ id: string }>('https://graph.facebook.com/v19.0/me/feed', {
     method: 'POST',
-    body: { message, ...(link ? { link } : {}), access_token: token },
+    body: { message: draft.message, ...(draft.link ? { link: draft.link } : {}), access_token: token },
     timeout: 20000,
   });
   return response.id;
@@ -317,11 +398,12 @@ export async function runPagePost(options: { dryRun?: boolean; force?: boolean; 
     draftPoem(recentPoems);
 
   if (!draft) return { status: 'skipped', reason: 'no usable draft' };
+  if (!draft.link) draft.imagePrompt = (await writeImagePrompt(draft.message)) || undefined;
   if (dryRun) return { status: 'draft', draft };
 
   // Claimed before posting so overlapping runs never post twice.
   await storage.setItem('posts:lastAt', now.getTime());
-  const id = await publishPagePost(draft.message, draft.link);
+  const id = await publishPagePost(draft);
 
   await storage.setItem('posts:turn', turn + 1);
   await storage.setItem(`post:${id}`, draft.message, { ttl: POST_TEXT_TTL_SECONDS });
