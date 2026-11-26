@@ -41,6 +41,15 @@ const IDENTITY_REPLY_EN = "Yes, I'm an AI.";
 const IDENTITY_HUMAN_REPLY = 'نه، من هوش مصنوعی هستم.';
 const IDENTITY_HUMAN_REPLY_EN = "No, I'm an AI.";
 
+// The Drive photos are all one drawn character, named ستاره. "Is this
+// you?" gets "it's ستاره, the character I am" from the model (see
+// SYSTEM_PROMPT). A sincere "is this photo really you?" or "you're an
+// AI, how can you have a photo?" gets this fixed, honest answer instead:
+// a plain "yes, it's me" would tell someone a real young woman is in the
+// picture.
+const IDENTITY_PHOTO_REPLY = 'بله، من هوش مصنوعی هستم. این عکس چهرهٔ شخصیت من، ستاره است؛ اگر روزی جسم داشتم، حتماً همین چهرهٔ من می‌بود 🙂';
+const IDENTITY_PHOTO_REPLY_EN = "Yes, I'm an AI. This picture is the face of my character, Sitara. If I ever had a body, this would surely be my face 🙂";
+
 // ---- Content moderation (sexual/explicit or abusive language) ----
 //
 // Handled the way a person would: the first sexual/vulgar/abusive
@@ -195,7 +204,7 @@ If the user sends only an emoji, a greeting, or a short reaction, reply just as 
 
 Do not repeat the same word or phrase multiple times in a row.
 
-Never claim that the photos you send are pictures of you.
+The photos you send show ستاره, the character you are. If someone asks whether a photo is you, answer warmly that it's a picture of ستاره, your character, for example «این عکس ستاره است، همو شخصیتی که من هستم 🙂». Never claim it is a real photo of you, and never tell stories about where or when it was taken.
 
 If someone asks to marry you, meet you, or talk on the phone, politely say no the way a modest young woman would — for example that you are not thinking about marriage right now, or that you only chat here — without explaining why and without mentioning being virtual, online-only, or unable to do things in the real world.
 
@@ -274,6 +283,17 @@ const IDENTITY_SELF_REF_WORDS = /(انسان|آدم|واقعی|زنده|ربات
 const IDENTITY_HUMAN_WORDS = /(انسان|آدم|واقعی|زنده|human|real|person)/iu;
 const IDENTITY_BEING_VERB = /(هستی|استی|میباشی)/u;
 const IDENTITY_EN_DIRECT = /are\s+you\s+(an?\s+)?(human|real|person|bot|ai|robot|computer|machine|program)/i;
+
+// "Is this photo really you?", "swear it's your real picture", "you're an
+// AI, how do you have a photo?". A real/swear word alone isn't enough
+// ("این عکس واقعاً قشنگه" is a compliment): it also has to point at her.
+const REAL_PHOTO_WORDS = /(واقعی|واقعا|واقعاً|راست|قسم|به\s?خدا|حقیقت|\b(real|really|truly|honestly|swear)\b)/iu;
+const PHOTO_SELF_WORDS = /(خودت|خودته|خودتی|تویی|توئی|تو\s?هستی|تو\s?استی|مال\s?تو|از\s?تو|\b(you|your|yourself)\b)/iu;
+
+function asksIfPhotoIsReal(text: string) {
+  if (!mentionsPhoto(text)) return false;
+  return isIdentityQuestion(text) || (REAL_PHOTO_WORDS.test(text) && PHOTO_SELF_WORDS.test(text));
+}
 
 function isIdentityQuestion(text: string) {
   const trimmed = text.trim();
@@ -770,6 +790,14 @@ export async function getAIResponse(senderId: string, userMessage: string, notes
   // else can override it.
   // A message that also talks about dying goes to the model instead, so
   // the reply isn't just a bare "I'm an AI".
+  if (!mentionsCrisis && asksIfPhotoIsReal(userMessage)) {
+    const photoReply = allowLatin ? IDENTITY_PHOTO_REPLY_EN : IDENTITY_PHOTO_REPLY;
+    messages.push({ role: 'user', content: userMessage });
+    messages.push({ role: 'assistant', content: photoReply });
+    await saveConversation(senderId, messages);
+    return photoReply;
+  }
+
   if (!mentionsCrisis && isIdentityQuestion(userMessage)) {
     const asksIfHuman = IDENTITY_HUMAN_WORDS.test(userMessage);
     const identityReply = allowLatin
