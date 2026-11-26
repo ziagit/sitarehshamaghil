@@ -300,13 +300,20 @@ const IMAGE_PROMPT_SUFFIX = ', Afghanistan, people seen from behind with faces t
 
 // MAI 2.6 is the only model tried that draws Hazara faces and looks like a
 // real photo (~35-45s per picture). There's no cheaper fallback model: the
-// owner would rather post without a picture than with a poor one.
-// POLLINATIONS_IMAGE_MODEL overrides it.
+// owner would rather post without a picture than with a poor one. The
+// model and service are fixed on purpose (no env override), so a config
+// change can't swap in a weaker one.
 const IMAGE_MODEL = 'microsoft/mai-image-2.6';
+const IMAGE_SERVICE_URL = 'https://gen.pollinations.ai';
+
+// MAI's pictures are 250-350KB; much smaller means a broken or
+// low-detail picture.
+const MIN_IMAGE_BYTES = 100000;
 const IMAGE_TIMEOUT_MS = 90000;
 
 const IMAGE_REVIEW_PROMPT = `This picture would go with the Facebook post below, on a page read mostly by Hazara Afghans. Answer YES only if all of these hold, otherwise NO:
-- It looks like a real photograph, not an AI image: no warped bodies, hands, or extra fingers, no garbled letters, no plastic look, no watermark.
+- It looks like a real, good-quality photograph, not an AI image: sharp and well composed, not blurry or dark, no warped bodies, hands, or extra fingers, no garbled letters, no plastic look, no watermark or logo.
+- Nothing in it is odd or out of place. If you have any doubt, answer NO.
 - No face is visible: any people are seen from behind or far away.
 - People, clothes, and the place look like Afghanistan (Kabul, Dasht-e-Barchi, or Hazara villages and mountains).
 - It fits the post.
@@ -338,9 +345,8 @@ async function writeImagePrompt(message: string): Promise<string | null> {
 // Downloaded here and uploaded as a file (rather than handing Facebook the
 // URL) because the Pollinations key goes in a header Facebook can't send.
 async function drawImage(prompt: string): Promise<Blob | null> {
-  const model = process.env.POLLINATIONS_IMAGE_MODEL || IMAGE_MODEL;
-  const base = (process.env.POLLINATIONS_GENERATION_URL || 'https://gen.pollinations.ai').replace(/\/$/, '');
-  const url = new URL(`${base}/image/${encodeURIComponent(prompt + IMAGE_PROMPT_SUFFIX)}`);
+  const model = IMAGE_MODEL;
+  const url = new URL(`${IMAGE_SERVICE_URL}/image/${encodeURIComponent(prompt + IMAGE_PROMPT_SUFFIX)}`);
   url.searchParams.set('model', model);
   url.searchParams.set('width', String(IMAGE_SIZE));
   url.searchParams.set('height', String(IMAGE_SIZE));
@@ -359,7 +365,7 @@ async function drawImage(prompt: string): Promise<Blob | null> {
       return null;
     }
     const image = await response.blob();
-    return image.size > 10000 ? image : null;
+    return image.size >= MIN_IMAGE_BYTES ? image : null;
   } catch (err: any) {
     console.error('Post image error:', model, err?.message);
     return null;
