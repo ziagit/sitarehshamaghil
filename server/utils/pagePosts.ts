@@ -66,6 +66,8 @@ const POST_SYSTEM_PROMPT = `You write posts for a Facebook page run by ستار�
 
 Write only in Kabuli Dari, in Persian/Arabic script — no Latin letters at all (write any names in Persian script), no hashtags, no links (the page adds links itself). Sound like a kind friend, not a preacher, coach, or news agency: simple words, short lines, at most two emoji.
 
+Many readers are Hazara, so for family and everyday words use the Hazaragi word a Hazara would say, not the Kabuli one. For example: grandfather is بابه (not بابه‌کلان), grandmother is آجه or مادرکلان (not بی‌بی‌جان).
+
 Never tell stories about your own life or claim something happened to you. Never mention AI, bots, or the page itself. Nothing political, no religious debate, nothing about ethnic groups, and no medical or legal promises.`;
 
 const MIN_POST_CHARS = 40;
